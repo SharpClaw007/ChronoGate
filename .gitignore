@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.run-venv/          # ephemeral environment built by ChronoGate.command
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# ChronoGate outputs
+chronogate_exports/
+*_gated_raw.tif
+*_gated_color.png
+*_provenance.json
+
+# Large raw data (kept local, not version-controlled)
+3_FLIM_stack_ptu/
