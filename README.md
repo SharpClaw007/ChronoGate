@@ -65,9 +65,13 @@ in real time.
 - **Per-pixel & ROI decays:** **click** any pixel or **drag a box** on the image
   to overlay that pixel/region's decay on the left panel. Single-pixel decays are
   photon-starved, so the display is **smoothed** (a `smooth` time-bin window) and
-  can be spatially averaged (an `avg` *N×N* box) for a clean curve — both
-  display-only (gating/export use the raw counts). Picks accumulate as a
-  colour-coded list (each labelled with its photons-in-gate); **Clear picks** resets.
+  can be spatially averaged (an `avg` *N×N* box) for a clean curve. An **exp fit**
+  toggle overlays a **mono-exponential fit** (a Poisson-weighted log-linear fit, so
+  the noisy low-count tail is smoothly extrapolated rather than fit step-by-step)
+  and reports the apparent **τ** — a visual guide, not a rigorous IRF-deconvolved
+  lifetime. All three are display-only (gating/export use the raw counts). Picks
+  accumulate as a colour-coded list (labelled with photons-in-gate and τ);
+  **Clear picks** resets.
 - **Spatial binning (pool photons):** a **bin** factor sums each pixel's *B×B*
   neighborhood (sliding, so the image keeps its size and coordinates), giving
   ≈B²× more photons per pixel — the standard fix for photon-starved single-pixel

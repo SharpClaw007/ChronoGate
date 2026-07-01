@@ -164,6 +164,65 @@ def rld_lifetime(
     return np.where(valid, tau, np.nan)
 
 
+def fit_mono_exponential(
+    t_ns: np.ndarray, decay: np.ndarray, t0_ns: float, baseline: float = 0.0
+) -> tuple[float, float] | None:
+    """Weighted log-linear mono-exponential fit -- a smooth visual guide.
+
+    Fits ``A * exp(-(t - t0) / tau) + baseline`` to the decay over ``t >= t0`` by
+    a Poisson-weighted linear regression of ``ln(decay - baseline)`` against time
+    (weights ``sqrt(counts)``, since ``Var(ln N) ~ 1/N``). The bright bins just
+    after the pulse dominate the fit, so the noisy low-count tail -- where a
+    per-pixel decay degenerates into 0/1/2-count "steps" -- is smoothly
+    extrapolated rather than fit point-by-point. This is a **display aid**, not a
+    rigorous (IRF-deconvolved, multi-exponential) lifetime analysis.
+
+    Parameters
+    ----------
+    t_ns, decay : np.ndarray
+        Microtime axis (ns) and the per-pixel decay to fit (same length).
+    t0_ns : float
+        Pulse time; only ``t >= t0`` is fit (the decaying part).
+    baseline : float
+        A flat background subtracted before the log fit (e.g. the noise floor).
+
+    Returns
+    -------
+    tuple[float, float] | None
+        ``(amplitude, tau_ns)``, or ``None`` when the data cannot support a
+        decaying fit (too few positive bins, or a non-decreasing trend).
+    """
+    t = np.asarray(t_ns, dtype=np.float64)
+    y = np.asarray(decay, dtype=np.float64) - float(baseline)
+    mask = (t >= t0_ns) & (y > 0)
+    if int(mask.sum()) < 3:
+        return None
+    tt = t[mask] - t0_ns
+    yy = y[mask]
+    try:
+        slope, intercept = np.polyfit(tt, np.log(yy), 1, w=np.sqrt(yy))
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+    if not np.isfinite(slope) or not np.isfinite(intercept) or slope >= 0:
+        return None
+    tau = -1.0 / slope
+    if tau > 1e6:            # a ~flat trend (numerically tiny slope) is not a decay
+        return None
+    return float(np.exp(intercept)), float(tau)
+
+
+def mono_exponential_curve(
+    t_ns: np.ndarray, t0_ns: float, amplitude: float, tau_ns: float,
+    baseline: float = 0.0,
+) -> np.ndarray:
+    """Evaluate ``A*exp(-(t-t0)/tau)+baseline`` (NaN before ``t0``, so it starts
+    at the pulse)."""
+    t = np.asarray(t_ns, dtype=np.float64)
+    y = amplitude * np.exp(-(t - t0_ns) / tau_ns) + baseline
+    y[t < t0_ns] = np.nan
+    return y
+
+
 def _moving_sum(a: np.ndarray, window: int, axis: int) -> np.ndarray:
     """Centered moving sum of size ``window`` along ``axis`` (edges clamped).
 

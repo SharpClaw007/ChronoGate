@@ -86,6 +86,7 @@ class ViewerController(QObject):
         self.threshold = 0
         self.box_size = 1
         self.smooth_bins = 5
+        self.fit_curve = False   # overlay a mono-exponential fit on picked decays
         self.bin_size = 1
         self.bin_target = 100
         self.cmap = "viridis"
@@ -202,6 +203,7 @@ class ViewerController(QObject):
         w.lifetime.cmap_life.currentTextChanged.connect(self._on_lifetime_cmap)
         w.picks.avg.valueChanged.connect(self._on_box_size)
         w.picks.smooth.valueChanged.connect(self._on_smooth)
+        w.picks.fit.toggled.connect(self._on_fit_curve)
         w.picks.btn_clear.clicked.connect(self._clear_picks)
         w.binning.bin.valueChanged.connect(self._on_bin_size)
         w.binning.target.valueChanged.connect(self._on_bin_target)
@@ -249,7 +251,7 @@ class ViewerController(QObject):
         lo_ns, hi_ns = gating.gate_bounds_ns(*self._get_gate(self.edit_target), res)
         widgets = [w.gate.spin_lo, w.gate.spin_hi, w.display.thr, w.display.floor,
                    w.display.cmap, w.lifetime.radio_a, w.lifetime.radio_b,
-                   w.lifetime.min_cts, w.lifetime.cmap_life, w.picks.avg, w.picks.smooth,
+                   w.lifetime.min_cts, w.lifetime.cmap_life, w.picks.avg, w.picks.smooth, w.picks.fit,
                    w.binning.bin, w.binning.target, w.filep.z, w.filep.channel,
                    w.act_intensity, w.act_lifetime, w.act_log, w.act_floor,
                    w.irf.radio_sample, w.irf.radio_instrument, w.irf.subtract, w.irf.scale]
@@ -265,6 +267,7 @@ class ViewerController(QObject):
             w.lifetime.cmap_life.setCurrentText(self.lifetime_cmap)
             w.picks.avg.setValue(self.box_size)
             w.picks.smooth.setValue(self.smooth_bins)
+            w.picks.fit.setChecked(self.fit_curve)
             w.binning.bin.setValue(self.bin_size)
             w.binning.target.setValue(self.bin_target)
             w.filep.z.setValue(min(self.z_index, w.filep.z.maximum()))
@@ -375,11 +378,24 @@ class ViewerController(QObject):
             seg = raw[self.gate_lo_bin: self.gate_hi_bin + 1] - floor_pp
             in_gate = float(np.clip(seg, 0, None).sum())
             color = _PICK_COLORS[i % len(_PICK_COLORS)]
+
+            # Optional mono-exponential fit overlay (a smooth visual guide).
+            fit = (gating.fit_mono_exponential(x, raw, self.model.t0_ns(), floor_pp)
+                   if self.fit_curve else None)
+            tau_note = f"  τ≈{fit[1]:.2f} ns" if fit else ""
+            # When fitting, fade the jagged raw steps so the smooth curve reads clearly.
             (ln,) = self.dc.ax.plot(x, shown, color=color, lw=1.2, drawstyle="steps-post",
-                                    label=f"{tag}: {in_gate:.1f}/px in gate")
+                                    alpha=0.35 if fit else 1.0,
+                                    label=f"{tag}: {in_gate:.1f}/px in gate{tau_note}")
             self._pick_lines.append(ln)
             self._picks_ymax = max(self._picks_ymax, float(shown.max()))
-            list_items.append((f"{tag} — {in_gate:.1f}/px in gate", color))
+            if fit is not None:
+                yfit = gating.mono_exponential_curve(x, self.model.t0_ns(), fit[0], fit[1], floor_pp)
+                (fl,) = self.dc.ax.plot(x, yfit, color=color, lw=1.8, ls="--",
+                                        label="_nolegend_")
+                self._pick_lines.append(fl)
+                self._picks_ymax = max(self._picks_ymax, float(np.nanmax(yfit)))
+            list_items.append((f"{tag} — {in_gate:.1f}/px in gate{tau_note}", color))
         if self.w is not None:
             self.w.picks.set_items(list_items)
 
@@ -800,6 +816,11 @@ class ViewerController(QObject):
         if self.picks:
             self._refresh_decay()
 
+    def _on_fit_curve(self, checked) -> None:
+        self.fit_curve = bool(checked)
+        if self.picks:
+            self._refresh_decay()
+
     def _on_bin_size(self, val) -> None:
         self.bin_size = max(1, int(val))
         self._rebuild_binned_model()
@@ -1071,7 +1092,8 @@ class ViewerController(QObject):
             "noise_floor_per_pixel": round(self.noise_floor_pp, 6),
             "noise_floor_total": round(self.noise_floor_pp * self.model.n_pixels, 4),
             "subtract_floor": self.apply_floor, "bin_size": self.bin_size, "bin_target": self.bin_target,
-            "box_size": self.box_size, "smooth_bins": self.smooth_bins, "log_scale": self.log_scale,
+            "box_size": self.box_size, "smooth_bins": self.smooth_bins, "fit_curve": self.fit_curve,
+            "log_scale": self.log_scale,
             "cmap": self.cmap, "mode": self.mode, "edit_target": self.edit_target,
             "gateB_lo_bin": self.gateB_lo_bin, "gateB_hi_bin": self.gateB_hi_bin,
             "gateB_lo_ns": round(blo_ns, 4), "gateB_hi_ns": round(bhi_ns, 4),
@@ -1177,6 +1199,7 @@ class ViewerController(QObject):
         self.apply_floor = bool(s.get("subtract_floor", self.apply_floor))
         self.box_size = int(s.get("box_size", self.box_size))
         self.smooth_bins = int(s.get("smooth_bins", self.smooth_bins))
+        self.fit_curve = bool(s.get("fit_curve", self.fit_curve))
         self.log_scale = bool(s.get("log_scale", self.log_scale))
         self.cmap = s.get("cmap", self.cmap)
 

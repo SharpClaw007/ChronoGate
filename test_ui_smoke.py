@@ -210,6 +210,27 @@ def test_picks_and_keyboard_helpers() -> None:
     print("OK: pixel pick/clear and gate-nudge shortcut work.")
 
 
+def test_fit_overlay() -> None:
+    from chronogate import gating
+    w = _window()
+    c = w.controller
+    r, col = np.unravel_index(int(c.model.intensity.argmax()), c.model.intensity.shape)
+    c._add_pixel(int(r), int(col))          # a bright, decaying pixel
+    n_plain = len(c._pick_lines)
+    raw = c.model.pixel_decay(int(r), int(r) + 1, int(col), int(col) + 1)
+    fit_ok = gating.fit_mono_exponential(c.model.cube.time_axis_ns, raw, c.model.t0_ns()) is not None
+
+    w.picks.fit.setChecked(True)            # exp fit on -> rebuild with overlay
+    assert c.fit_curve
+    if fit_ok:
+        assert len(c._pick_lines) == n_plain + 1, "fit adds one smooth overlay line"
+        labels = [w.picks.list.item(i).text() for i in range(w.picks.list.count())]
+        assert any("τ" in t for t in labels), "the fit reports an apparent tau"
+    w.picks.fit.setChecked(False)
+    assert not c.fit_curve and len(c._pick_lines) == n_plain
+    print(f"OK: exp-fit overlay toggles (fit {'drawn' if fit_ok else 'skipped: no decay'}).")
+
+
 def test_floor_slider_per_pixel_and_scale() -> None:
     import math
     w = _window()
@@ -250,6 +271,7 @@ if __name__ == "__main__":
         test_lifetime_export_and_settings_roundtrip()
         test_irf_flow()
         test_picks_and_keyboard_helpers()
+        test_fit_overlay()
         test_floor_slider_per_pixel_and_scale()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

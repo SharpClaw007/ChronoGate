@@ -263,6 +263,9 @@ class PicksPanel(QGroupBox):
         self.smooth.setValue(5)
         self.smooth.setMaximumWidth(60)
         self.smooth.setToolTip("Time-bin moving-average smoothing of the picked decay (display only).")
+        self.fit = QCheckBox("exp fit")
+        self.fit.setToolTip("Overlay a mono-exponential fit on each picked decay -- a smooth "
+                            "visual guide through low-count noise; shows the apparent τ.")
         self.btn_clear = QPushButton("Clear")
         self.list = QListWidget()
         self.list.setToolTip("Picked pixels / regions and their photons-in-gate.")
@@ -277,6 +280,8 @@ class PicksPanel(QGroupBox):
         row.addSpacing(10)
         row.addWidget(QLabel("smooth"))
         row.addWidget(self.smooth)
+        row.addSpacing(10)
+        row.addWidget(self.fit)
         row.addStretch(1)
         lay.addLayout(row)
         lay.addWidget(self.list)

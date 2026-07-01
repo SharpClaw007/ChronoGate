@@ -221,6 +221,29 @@ def test_irf_isolation_and_subtraction() -> None:
     print("OK: IRF t0/window, exact prefix-sum subtraction, well-defined scale, intensity-anchored.")
 
 
+def test_mono_exponential_fit_recovers_tau():
+    """The display fit should recover a known tau from a noisy, low-count decay."""
+    rng = np.random.default_rng(0)
+    res = 25.0 / 264
+    t = np.arange(264) * res
+    t0, tau_true = 1.0, 2.5
+    ideal = np.where(t >= t0, 120.0 * np.exp(-(t - t0) / tau_true), 0.0)
+    noisy = rng.poisson(ideal).astype(float)          # Poisson noise -> jagged tail
+
+    fit = gating.fit_mono_exponential(t, noisy, t0)
+    assert fit is not None, "fit should succeed on a decaying curve"
+    amp, tau = fit
+    assert abs(tau - tau_true) < 0.3, f"recovered tau {tau:.3f} not near {tau_true}"
+
+    y = gating.mono_exponential_curve(t, t0, amp, tau)
+    assert np.isnan(y[0]) and np.isfinite(y[-1]), "curve starts at t0 (NaN before)"
+    assert np.all(np.diff(y[t >= t0]) <= 0), "the fitted curve is smooth & monotonically decaying"
+
+    # Flat / non-decaying data yields no fit (guarded, not a bad curve).
+    assert gating.fit_mono_exponential(t, np.ones_like(t) * 5.0, t0) is None
+    print(f"OK: mono-exp fit recovers tau ~ {tau:.2f} ns from noisy low counts.")
+
+
 if __name__ == "__main__":
     try:
         test_prefix_sum_matches_direct_sum()
@@ -228,6 +251,7 @@ if __name__ == "__main__":
         test_spatial_binning_matches_brute_force()
         test_rld_recovers_known_lifetime()
         test_irf_isolation_and_subtraction()
+        test_mono_exponential_fit_recovers_tau()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)
