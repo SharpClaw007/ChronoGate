@@ -348,6 +348,10 @@ class ViewerController(QObject):
         self._picks_ymax = 0.0
         x = self.model.cube.time_axis_ns
         ny, nx = self.model.intensity.shape
+        # Per-pixel floor subtracted from each pick's in-gate count, matching the
+        # shaded area under the decay (photons above the floor line).
+        floor_pp = (self._floor_per_pixel()
+                    if (self.apply_floor and self.noise_floor_total > 0) else 0.0)
         list_items = []
         for i, pick in enumerate(self.picks):
             if pick["kind"] == "pixel":
@@ -361,7 +365,8 @@ class ViewerController(QObject):
                 tag = f"roi[{r0}:{r1},{c0}:{c1}]"
             raw = self.model.pixel_decay(r0, r1, c0, c1)
             shown = self._smooth(raw, self.smooth_bins)
-            in_gate = float(raw[self.gate_lo_bin: self.gate_hi_bin + 1].sum())
+            seg = raw[self.gate_lo_bin: self.gate_hi_bin + 1] - floor_pp
+            in_gate = float(np.clip(seg, 0, None).sum())
             color = _PICK_COLORS[i % len(_PICK_COLORS)]
             (ln,) = self.dc.ax.plot(x, shown, color=color, lw=1.2, drawstyle="steps-post",
                                     label=f"{tag}: {in_gate:.1f}/px in gate")
@@ -495,7 +500,10 @@ class ViewerController(QObject):
             gated = self.model.gate(self.gate_lo_bin, self.gate_hi_bin, floor_per_bin=floor)
             lo_ns, hi_ns = gating.gate_bounds_ns(self.gate_lo_bin, self.gate_hi_bin, res)
             t0 = self.model.t0_ns()
-            in_gate = int(self.model.decay[self.gate_lo_bin: self.gate_hi_bin + 1].sum())
+            # Report the photons actually in the (background-/IRF-subtracted,
+            # clamped) image, so the number tracks the noise floor and IRF just
+            # like the picture does -- not the raw decay sum.
+            in_gate = int(gated.sum())
             unit = "photons" if self.bin_size == 1 else f"cts ·{self.bin_size}×{self.bin_size}"
             tag = " (sample, IRF-sub)" if (self.irf is not None and self.irf_subtract) else ""
             title = (f"gate {lo_ns:.2f}–{hi_ns:.2f} ns  (t0{lo_ns - t0:+.1f}…{hi_ns - t0:+.1f}){tag}\n"
