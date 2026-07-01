@@ -46,36 +46,41 @@ def _form() -> QFormLayout:
 
 
 class SliderSpin(QWidget):
-    """A horizontal QSlider linked to a QSpinBox (drag *or* type the value).
+    """A horizontal QSlider linked to a spin box (drag *or* type the value).
 
-    The spin box holds the value (integer, real units); the slider is a position
-    that maps to it either **linearly** (default) or **logarithmically**
-    (``log=True`` / :meth:`setScale`), so the control can match a log-scaled plot
-    axis while the typed value stays exact. Programmatic
+    The spin box holds the value; the slider is a position that maps to it either
+    **linearly** (default) or **logarithmically** (``log=True`` / :meth:`setScale`)
+    so the control can match a log-scaled plot axis while the typed value stays
+    exact. Pass ``decimals > 0`` for a fractional value (a ``QDoubleSpinBox``) --
+    needed when the meaningful range dips below 1. Programmatic
     :meth:`setValue`/:meth:`setRange`/:meth:`setScale` are silent (no
     ``valueChanged``); only user interaction emits, so the controller can sync it
     without feedback loops.
     """
 
     valueChanged = Signal(float)
-    _LOG_STEPS = 1000  # slider resolution when log-scaled
+    _STEPS = 1000  # slider resolution when position is mapped (log or fractional)
 
-    def __init__(self, minimum: int = 0, maximum: int = 100, value: int = 0,
-                 suffix: str = "", log: bool = False):
+    def __init__(self, minimum=0, maximum=100, value=0, suffix: str = "",
+                 log: bool = False, decimals: int = 0):
         super().__init__()
-        self.slider = QSlider(Qt.Horizontal)
-        self.spin = QSpinBox()
+        self._decimals = int(decimals)
         self._log = bool(log)
-        self._min = int(minimum)
-        self._max = max(self._min, int(maximum))
+        self._min = float(minimum)
+        self._max = max(self._min, float(maximum))
+        self.slider = QSlider(Qt.Horizontal)
+        self.spin = QDoubleSpinBox() if self._decimals else QSpinBox()
+        if self._decimals:
+            self.spin.setDecimals(self._decimals)
+            self.spin.setSingleStep(10.0 ** -self._decimals)
         if suffix:
             self.spin.setSuffix(suffix)
-        self.spin.setButtonSymbols(QSpinBox.NoButtons)
-        self.spin.setMaximumWidth(78)
+        self.spin.setButtonSymbols(type(self.spin).NoButtons)
+        self.spin.setMaximumWidth(92 if self._decimals else 78)
         self.slider.setMinimumWidth(60)
         with QSignalBlocker(self.spin):
             self.spin.setRange(self._min, self._max)
-            self.spin.setValue(int(value))
+            self.spin.setValue(self._round(value))
         self._config_slider()
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -85,40 +90,57 @@ class SliderSpin(QWidget):
         self.slider.valueChanged.connect(self._from_slider)
         self.spin.valueChanged.connect(self._from_spin)
 
-    # -- slider position <-> value mapping (identity when linear) ------------
+    # -- slider position <-> value mapping (identity when plain-linear-int) ---
+    @property
+    def _mapped(self) -> bool:
+        return self._log or self._decimals > 0
+
+    def _round(self, v):
+        return round(float(v), self._decimals) if self._decimals else int(round(v))
+
     def _config_slider(self) -> None:
         with QSignalBlocker(self.slider):
-            if self._log:
-                self.slider.setRange(0, self._LOG_STEPS)
+            if self._mapped:
+                self.slider.setRange(0, self._STEPS)
             else:
-                self.slider.setRange(self._min, self._max)
+                self.slider.setRange(int(self._min), int(self._max))
             self.slider.setValue(self._pos_from_value(self.spin.value()))
 
-    def _log_bounds(self) -> tuple[int, int]:
-        lo = max(1, self._min)              # log needs a positive origin
-        return lo, max(lo + 1, self._max)
+    def _bounds(self):
+        lo, hi = self._min, self._max
+        step = 10.0 ** -self._decimals if self._decimals else 1.0
+        if self._log:
+            lo = max(lo, step)              # log needs a positive origin
+            hi = max(hi, lo * (1.0 + 1e-9))
+        else:
+            hi = max(hi, lo + step)
+        return lo, hi
 
-    def _value_from_pos(self, p: int) -> int:
-        if not self._log:
+    def _value_from_pos(self, p: int):
+        if not self._mapped:
             return int(p)
-        lo, hi = self._log_bounds()
-        return int(round(lo * (hi / lo) ** (p / self._LOG_STEPS)))
+        lo, hi = self._bounds()
+        frac = p / self._STEPS
+        v = lo * (hi / lo) ** frac if self._log else lo + (hi - lo) * frac
+        return self._round(v)
 
-    def _pos_from_value(self, v: int) -> int:
-        if not self._log:
+    def _pos_from_value(self, v) -> int:
+        if not self._mapped:
             return int(v)
-        lo, hi = self._log_bounds()
-        v = min(max(int(v), lo), hi)
-        return int(round(self._LOG_STEPS * math.log(v / lo) / math.log(hi / lo)))
+        lo, hi = self._bounds()
+        v = min(max(float(v), lo), hi)
+        frac = (math.log(v / lo) / math.log(hi / lo)) if self._log else (v - lo) / (hi - lo)
+        return int(round(frac * self._STEPS))
 
     def _from_slider(self, p: int) -> None:
         v = self._value_from_pos(p)
-        if v != self.spin.value():
-            with QSignalBlocker(self.spin):
-                self.spin.setValue(v)
+        if v == self.spin.value():
+            return
+        with QSignalBlocker(self.spin):
+            self.spin.setValue(v)
         self.valueChanged.emit(float(v))
 
-    def _from_spin(self, v: int) -> None:
+    def _from_spin(self, v) -> None:
         pos = self._pos_from_value(v)
         if pos != self.slider.value():
             with QSignalBlocker(self.slider):
@@ -126,15 +148,15 @@ class SliderSpin(QWidget):
         self.valueChanged.emit(float(v))
 
     def setRange(self, lo, hi) -> None:
-        self._min = int(lo)
-        self._max = max(self._min, int(hi))
+        self._min = float(lo)
+        self._max = max(self._min, float(hi))
         with QSignalBlocker(self.spin):
             self.spin.setRange(self._min, self._max)
         self._config_slider()
 
     def setValue(self, v) -> None:
         with QSignalBlocker(self.spin):
-            self.spin.setValue(int(round(v)))
+            self.spin.setValue(self._round(v))
         with QSignalBlocker(self.slider):
             self.slider.setValue(self._pos_from_value(self.spin.value()))
 
@@ -145,10 +167,10 @@ class SliderSpin(QWidget):
         self._log = bool(log)
         self._config_slider()
 
-    def value(self) -> int:
+    def value(self):
         return self.spin.value()
 
-    def maximum(self) -> int:
+    def maximum(self):
         return self.spin.maximum()
 
 
@@ -182,8 +204,10 @@ class DisplayPanel(QGroupBox):
         super().__init__("Display")
         self.thr = SliderSpin(0, 100, 0)
         self.thr.setToolTip("Blank pixels whose total photons are below this (dim-pixel mask).")
-        self.floor = SliderSpin(0, 100, 0, suffix=" cts")
-        self.floor.setToolTip("Noise floor in counts/bin, subtracted from the gated intensity (× gate width).")
+        self.floor = SliderSpin(0, 100, 0, suffix=" /px", decimals=3)
+        self.floor.setToolTip("Noise floor in counts/bin per pixel, subtracted from every "
+                              "pixel (× gate width). Max = the brightest pixel, so it can "
+                              "zero the image.")
         self.cmap = QComboBox()
         self.cmap.addItems(INTENSITY_CMAPS)
         self.cmap.setToolTip("Colormap for the gated intensity image.")

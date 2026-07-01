@@ -112,7 +112,7 @@ class ViewerController(QObject):
 
         # Filled in when a file is loaded (see load_path).
         self.model = None
-        self.noise_floor_total = 0.0
+        self.noise_floor_pp = 0.0   # noise floor in counts/bin per pixel
         self.gate_lo_bin = 0
         self.gate_hi_bin = 0
         self.gateB_lo_bin = 0
@@ -131,14 +131,14 @@ class ViewerController(QObject):
         return gating.GatingModel(cube, bin_factor=self.bin_size)
 
     def _floor_per_pixel(self) -> float:
-        return self.noise_floor_total / max(1, self.model.n_pixels)
+        """The floor actually subtracted from each pixel (counts/bin per pixel)."""
+        return self.noise_floor_pp
 
     def _floor_slider_range(self) -> tuple[int, int]:
-        """Slider bounds for the noise floor: the lowest and highest recorded
-        per-bin totals of the summed decay, so the floor line can sweep the full
-        height of the decay curve (from the smallest recorded bin up to the peak)."""
-        decay = self.model.decay
-        return int(decay.min()), int(decay.max())
+        """Slider bounds for the (per-pixel) noise floor: 0 up to the brightest
+        single-pixel bin, so the floor can be pushed high enough to zero even the
+        brightest pixel -- not just the average level."""
+        return 0, self.model.peak_counts_per_bin()
 
     # --------------------------------------------------------------- artists
     def _build_artists(self) -> None:
@@ -257,7 +257,7 @@ class ViewerController(QObject):
             w.gate.spin_lo.setValue(lo_ns)
             w.gate.spin_hi.setValue(hi_ns)
             w.display.thr.setValue(self.threshold)
-            w.display.floor.setValue(min(self.noise_floor_total, w.display.floor.maximum()))
+            w.display.floor.setValue(min(self.noise_floor_pp, w.display.floor.maximum()))
             w.display.cmap.setCurrentText(self.cmap)
             w.lifetime.radio_a.setChecked(self.edit_target == "A")
             w.lifetime.radio_b.setChecked(self.edit_target == "B")
@@ -326,7 +326,7 @@ class ViewerController(QObject):
         ax = self.dc.ax
         res = self.model.resolution_ns
         x = self.model.cube.time_axis_ns
-        floor_on = self.apply_floor and self.noise_floor_total > 0
+        floor_on = self.apply_floor and self.noise_floor_pp > 0
         for which, lo_bin, hi_bin, color in self._gates():
             lo_ns, hi_ns = gating.gate_bounds_ns(lo_bin, hi_bin, res)
             in_gate = (x >= lo_ns) & (x < hi_ns)
@@ -340,7 +340,9 @@ class ViewerController(QObject):
                         x, lower, y, where=in_gate & (y > lower), step="post",
                         color=ln.get_color(), alpha=0.25, lw=0))
             else:
-                lower = self.noise_floor_total if floor_on else 0.0
+                # The summed decay is a total; draw the per-pixel floor at its
+                # equivalent total level (× pixel count) so it lines up.
+                lower = self.noise_floor_pp * self.model.n_pixels if floor_on else 0.0
                 y = self.model.decay.astype(float)
                 self._gate_fills.append(ax.fill_between(
                     x, lower, y, where=in_gate & (y > lower), step="post",
@@ -356,7 +358,7 @@ class ViewerController(QObject):
         # Per-pixel floor subtracted from each pick's in-gate count, matching the
         # shaded area under the decay (photons above the floor line).
         floor_pp = (self._floor_per_pixel()
-                    if (self.apply_floor and self.noise_floor_total > 0) else 0.0)
+                    if (self.apply_floor and self.noise_floor_pp > 0) else 0.0)
         list_items = []
         for i, pick in enumerate(self.picks):
             if pick["kind"] == "pixel":
@@ -402,24 +404,26 @@ class ViewerController(QObject):
             data_max = self._picks_ymax
         else:
             ax.set_ylabel("photons")
-            floor_y = self.noise_floor_total
+            # Per-pixel floor drawn at its equivalent total level on the summed decay.
+            floor_y = self.noise_floor_pp * self.model.n_pixels
             data_max = float(self.model.decay.max())
-        ymax = max(data_max, floor_y, 1.0)
+        ymax = max(data_max, 1.0)   # scale to the data; a high floor pins to the top
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Data has no positive values")
             if self.log_scale and data_max > 0:
                 ax.set_yscale("log")
                 bottom = 0.5
-                if self.noise_floor_total > 0 and floor_y > 0:
-                    bottom = max(1e-4, min(bottom, floor_y * 0.5))
+                if self.noise_floor_pp > 0 and 0 < floor_y < bottom:
+                    bottom = max(1e-4, floor_y * 0.5)
                 ax.set_ylim(bottom, ymax * 1.5)
             else:
                 ax.set_yscale("linear")
                 ax.set_ylim(0, ymax * 1.05)
 
-        if self.noise_floor_total > 0:
-            self.floor_line.set_ydata([floor_y, floor_y])
+        if self.noise_floor_pp > 0:
+            line_y = min(floor_y, ymax)   # pin to the top when the floor exceeds the data
+            self.floor_line.set_ydata([line_y, line_y])
             self.floor_line.set_visible(True)
         else:
             self.floor_line.set_visible(False)
@@ -777,7 +781,7 @@ class ViewerController(QObject):
         self._refresh_image()
 
     def _on_noise_floor(self, val) -> None:
-        self.noise_floor_total = float(val)
+        self.noise_floor_pp = float(val)
         self._refresh_decay()
         self._refresh_image()
 
@@ -820,10 +824,11 @@ class ViewerController(QObject):
     def _rebuild_binned_model(self) -> None:
         self.model = gating.GatingModel(self.model.cube, bin_factor=self.bin_size)
         self._reapply_irf()
-        self.noise_floor_total = self.model.auto_noise_floor_total()
+        # Binning changes the per-pixel scale, so reset the floor to its default.
+        self.noise_floor_pp = self.model.auto_noise_floor_pp()
         self._refit_ranges()
         with _blocked(self.w.display.floor):
-            self.w.display.floor.setValue(min(self.noise_floor_total, self.w.display.floor.maximum()))
+            self.w.display.floor.setValue(min(self.noise_floor_pp, self.w.display.floor.maximum()))
         self._update_header()
         self._refresh_decay()
         self._refresh_image()
@@ -934,7 +939,7 @@ class ViewerController(QObject):
         if self.w is not None:
             self.w.irf.set_irf_controls_enabled(False)
             self.w.irf.set_loaded_name("none loaded")
-        self.noise_floor_total = model.auto_noise_floor_total()
+        self.noise_floor_pp = model.auto_noise_floor_pp()
         if first:
             self.gate_lo_bin = model.t0_bin
             self.gate_hi_bin = model.n_bins - 1
@@ -1063,7 +1068,8 @@ class ViewerController(QObject):
             "z_index": self.z_index, "z_file": self.stack[self.z_index].name, "channel": self.channel,
             "sum_frames": self.sum_frames, "gate_lo_bin": self.gate_lo_bin, "gate_hi_bin": self.gate_hi_bin,
             "gate_lo_ns": round(lo_ns, 4), "gate_hi_ns": round(hi_ns, 4), "threshold": self.threshold,
-            "noise_floor_total": round(self.noise_floor_total, 4), "noise_floor_per_pixel": self._floor_per_pixel(),
+            "noise_floor_per_pixel": round(self.noise_floor_pp, 6),
+            "noise_floor_total": round(self.noise_floor_pp * self.model.n_pixels, 4),
             "subtract_floor": self.apply_floor, "bin_size": self.bin_size, "bin_target": self.bin_target,
             "box_size": self.box_size, "smooth_bins": self.smooth_bins, "log_scale": self.log_scale,
             "cmap": self.cmap, "mode": self.mode, "edit_target": self.edit_target,
@@ -1164,7 +1170,10 @@ class ViewerController(QObject):
         self.gate_lo_bin = int(s.get("gate_lo_bin", self.gate_lo_bin))
         self.gate_hi_bin = int(s.get("gate_hi_bin", self.gate_hi_bin))
         self.threshold = int(s.get("threshold", self.threshold))
-        self.noise_floor_total = float(s.get("noise_floor_total", self.noise_floor_total))
+        if "noise_floor_per_pixel" in s:
+            self.noise_floor_pp = float(s["noise_floor_per_pixel"])
+        elif "noise_floor_total" in s:  # older settings stored the summed floor
+            self.noise_floor_pp = float(s["noise_floor_total"]) / max(1, self.model.n_pixels)
         self.apply_floor = bool(s.get("subtract_floor", self.apply_floor))
         self.box_size = int(s.get("box_size", self.box_size))
         self.smooth_bins = int(s.get("smooth_bins", self.smooth_bins))

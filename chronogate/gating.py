@@ -275,6 +275,23 @@ class GatingModel:
         """
         return float(self.bg_per_bin.sum())
 
+    def auto_noise_floor_pp(self) -> float:
+        """Auto background as counts/bin *per pixel* -- the default floor value.
+
+        This is what :meth:`gate` actually subtracts from each pixel; it equals
+        :meth:`auto_noise_floor_total` divided by the pixel count.
+        """
+        return float(self.bg_per_bin.mean())
+
+    def peak_counts_per_bin(self) -> int:
+        """The brightest single-pixel, single-bin count.
+
+        The top of the *per-pixel* noise-floor range: a floor at this level
+        subtracts more than any pixel holds in a bin, so the gated image can be
+        driven all the way to zero.
+        """
+        return int(self._counts.max())
+
     def gate(self, lo_bin: int, hi_bin: int, floor_per_bin: float | np.ndarray = 0.0) -> np.ndarray:
         """Gated intensity image for inclusive bins ``[lo_bin, hi_bin]``.
 

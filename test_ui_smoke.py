@@ -210,25 +210,37 @@ def test_picks_and_keyboard_helpers() -> None:
     print("OK: pixel pick/clear and gate-nudge shortcut work.")
 
 
-def test_floor_slider_follows_yscale() -> None:
+def test_floor_slider_per_pixel_and_scale() -> None:
     import math
     w = _window()
     c = w.controller
     f = w.display.floor
-    # Log-Y is on by default -> the floor slider is log-scaled (index-based).
-    assert c.log_scale and f.slider.maximum() == f._LOG_STEPS
-    # Its midpoint maps to ~the geometric mean of the value range (true log spacing).
-    mid = f._value_from_pos(f._LOG_STEPS // 2)
-    geo = math.sqrt(max(1, f._min) * f._max)
-    assert abs(mid - geo) / geo < 0.05, "log slider midpoint should be the geometric mean"
-    # The custom input box keeps the exact typed value, and it survives a scale switch.
-    f.spin.setValue(1234)
-    assert f.value() == 1234
-    w.act_log.toggled.emit(False)          # uncheck Log Y -> linear slider
-    assert not c.log_scale and f.slider.maximum() == f._max and f.value() == 1234
-    w.act_log.toggled.emit(True)           # back to log
-    assert c.log_scale and f.value() == 1234
-    print("OK: floor slider follows the y-axis scale (log/linear); spinbox stays exact.")
+    # The floor is a fractional, per-pixel control ranged 0 .. brightest pixel.
+    assert f._decimals == 3 and f._max == c.model.peak_counts_per_bin()
+    assert abs(f.value() - c.model.auto_noise_floor_pp()) < 0.01, "default is the auto per-pixel floor"
+    # Fractional => the slider is always index-based; the scale sets the mapping.
+    assert f.slider.maximum() == f._STEPS
+    assert c.log_scale                              # log-Y on by default
+    lo, hi = f._bounds()
+    mid = f._value_from_pos(f._STEPS // 2)
+    assert abs(mid - math.sqrt(lo * hi)) / math.sqrt(lo * hi) < 0.03, "log midpoint ~ geometric mean"
+    w.act_log.toggled.emit(False)                  # uncheck Log Y -> linear mapping
+    assert not c.log_scale
+    lo, hi = f._bounds()
+    mid = f._value_from_pos(f._STEPS // 2)
+    assert abs(mid - (lo + hi) / 2) / ((lo + hi) / 2) < 0.03, "linear midpoint ~ arithmetic mean"
+    # The custom input box keeps an exact fractional value across a scale switch.
+    v = round(min(2.5, f._max), 2)
+    f.spin.setValue(v)
+    assert f.value() == v
+    w.act_log.toggled.emit(True)
+    assert c.log_scale and f.value() == v
+    # Cranking the floor to the top can drive the whole gated image to zero.
+    c.apply_floor = True
+    c.noise_floor_pp = float(f._max)
+    gated = c.model.gate(c.gate_lo_bin, c.gate_hi_bin, floor_per_bin=c.noise_floor_pp)
+    assert float(gated.sum()) == 0.0, "max per-pixel floor should zero the image"
+    print("OK: per-pixel floor slider follows the y-axis scale; fractional spinbox stays exact; max zeros the image.")
 
 
 if __name__ == "__main__":
@@ -238,7 +250,7 @@ if __name__ == "__main__":
         test_lifetime_export_and_settings_roundtrip()
         test_irf_flow()
         test_picks_and_keyboard_helpers()
-        test_floor_slider_follows_yscale()
+        test_floor_slider_per_pixel_and_scale()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)
