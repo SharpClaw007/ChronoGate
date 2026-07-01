@@ -133,8 +133,12 @@ class ViewerController(QObject):
     def _floor_per_pixel(self) -> float:
         return self.noise_floor_total / max(1, self.model.n_pixels)
 
-    def _floor_slider_max(self) -> float:
-        return max(self.model.auto_noise_floor_total() * 5.0, 10.0)
+    def _floor_slider_range(self) -> tuple[int, int]:
+        """Slider bounds for the noise floor: the lowest and highest recorded
+        per-bin totals of the summed decay, so the floor line can sweep the full
+        height of the decay curve (from the smallest recorded bin up to the peak)."""
+        decay = self.model.decay
+        return int(decay.min()), int(decay.max())
 
     # --------------------------------------------------------------- artists
     def _build_artists(self) -> None:
@@ -226,7 +230,7 @@ class ViewerController(QObject):
         pos = self.model.intensity[self.model.intensity > 0]
         tmax = int(np.percentile(pos, 99.9)) if pos.size else 1
         w.display.thr.setRange(0, max(1, tmax))
-        w.display.floor.setRange(0, self._floor_slider_max())
+        w.display.floor.setRange(*self._floor_slider_range())
         w.gate.spin_lo.setRange(0.0, self.model.cube.period_ns if np.isfinite(self.model.cube.period_ns) else 1e6)
         w.gate.spin_hi.setRange(0.0, self.model.cube.period_ns if np.isfinite(self.model.cube.period_ns) else 1e6)
         w.filep.z.setRange(0, max(0, len(self.stack) - 1))
