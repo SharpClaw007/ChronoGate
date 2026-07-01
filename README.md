@@ -207,8 +207,15 @@ targets whichever gate you want to move.
 
 ### One-click launcher (macOS)
 
-`ChronoGate.command` is a double-clickable launcher that needs **no prior
-setup**. On **Apple Silicon it automatically uses a native arm64 Python**
+**`ChronoGate.app`** is the double-clickable app in the project root. It always
+runs the code in the folder it lives in (it locates the project from its own
+bundle path), so it can't launch a stale copy — keep it next to
+`ChronoGate.command`. The very first launch opens a Terminal to show the one-time
+environment setup; after that it launches silently. Under the hood it just calls
+`ChronoGate.command`.
+
+`ChronoGate.command` is the underlying script (also double-clickable) and needs
+**no prior setup**. On **Apple Silicon it automatically uses a native arm64 Python**
 (Homebrew's `/opt/homebrew/bin/python3` by default) instead of an x86-64
 interpreter under Rosetta — the Qt GUI is far more stable that way. It uses a
 **cached environment keyed to the architecture + `requirements.txt`** (a

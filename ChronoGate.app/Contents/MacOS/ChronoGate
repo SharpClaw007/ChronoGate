@@ -1,0 +1,29 @@
+#!/bin/bash
+#
+# ChronoGate.app -- double-clickable launcher (macOS).
+# ----------------------------------------------------
+# Always runs the code in the folder that CONTAINS this .app bundle, so it can
+# never launch a stale copy elsewhere. It delegates to ChronoGate.command, which
+# selects a native arm64 Python and builds/uses an arch-keyed venv.
+#
+# Keep ChronoGate.app inside the project folder (next to ChronoGate.command).
+
+set -euo pipefail
+
+# .../ChronoGate.app/Contents/MacOS/ChronoGate  ->  the project root is 3 up.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "$ROOT"
+
+if [ ! -x "$ROOT/ChronoGate.command" ]; then
+    osascript -e 'display alert "ChronoGate" message "ChronoGate.command was not found next to the app. Keep ChronoGate.app inside the ChronoGate project folder."' >/dev/null 2>&1 || true
+    exit 1
+fi
+
+# First launch (no environment built yet) opens the setup in Terminal so its
+# one-time progress is visible; afterwards it launches silently (logged), with
+# no lingering terminal window.
+if ls "$ROOT"/.run-venv-*/.installed >/dev/null 2>&1; then
+    exec "$ROOT/ChronoGate.command" >"$ROOT/.chronogate-launch.log" 2>&1
+else
+    open -a Terminal "$ROOT/ChronoGate.command"
+fi
