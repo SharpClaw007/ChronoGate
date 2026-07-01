@@ -231,6 +231,7 @@ class ViewerController(QObject):
         tmax = int(np.percentile(pos, 99.9)) if pos.size else 1
         w.display.thr.setRange(0, max(1, tmax))
         w.display.floor.setRange(*self._floor_slider_range())
+        w.display.floor.setScale(self.log_scale)  # slider matches the decay's y-scale
         w.gate.spin_lo.setRange(0.0, self.model.cube.period_ns if np.isfinite(self.model.cube.period_ns) else 1e6)
         w.gate.spin_hi.setRange(0.0, self.model.cube.period_ns if np.isfinite(self.model.cube.period_ns) else 1e6)
         w.filep.z.setRange(0, max(0, len(self.stack) - 1))
@@ -829,6 +830,8 @@ class ViewerController(QObject):
 
     def _on_log(self, checked) -> None:
         self.log_scale = bool(checked)
+        if self.w is not None:
+            self.w.display.floor.setScale(self.log_scale)  # keep the slider in step
         self._refresh_decay()
 
     def _on_floor(self, checked) -> None:

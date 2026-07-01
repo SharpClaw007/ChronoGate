@@ -210,6 +210,27 @@ def test_picks_and_keyboard_helpers() -> None:
     print("OK: pixel pick/clear and gate-nudge shortcut work.")
 
 
+def test_floor_slider_follows_yscale() -> None:
+    import math
+    w = _window()
+    c = w.controller
+    f = w.display.floor
+    # Log-Y is on by default -> the floor slider is log-scaled (index-based).
+    assert c.log_scale and f.slider.maximum() == f._LOG_STEPS
+    # Its midpoint maps to ~the geometric mean of the value range (true log spacing).
+    mid = f._value_from_pos(f._LOG_STEPS // 2)
+    geo = math.sqrt(max(1, f._min) * f._max)
+    assert abs(mid - geo) / geo < 0.05, "log slider midpoint should be the geometric mean"
+    # The custom input box keeps the exact typed value, and it survives a scale switch.
+    f.spin.setValue(1234)
+    assert f.value() == 1234
+    w.act_log.toggled.emit(False)          # uncheck Log Y -> linear slider
+    assert not c.log_scale and f.slider.maximum() == f._max and f.value() == 1234
+    w.act_log.toggled.emit(True)           # back to log
+    assert c.log_scale and f.value() == 1234
+    print("OK: floor slider follows the y-axis scale (log/linear); spinbox stays exact.")
+
+
 if __name__ == "__main__":
     try:
         test_window_builds_and_renders()
@@ -217,6 +238,7 @@ if __name__ == "__main__":
         test_lifetime_export_and_settings_roundtrip()
         test_irf_flow()
         test_picks_and_keyboard_helpers()
+        test_floor_slider_follows_yscale()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

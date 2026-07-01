@@ -8,6 +8,8 @@ kept compact so the six panels fit in two columns without scrolling.
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import Qt, Signal, QSignalBlocker
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -46,25 +48,35 @@ def _form() -> QFormLayout:
 class SliderSpin(QWidget):
     """A horizontal QSlider linked to a QSpinBox (drag *or* type the value).
 
-    Programmatic :meth:`setValue`/:meth:`setRange` are silent (no
+    The spin box holds the value (integer, real units); the slider is a position
+    that maps to it either **linearly** (default) or **logarithmically**
+    (``log=True`` / :meth:`setScale`), so the control can match a log-scaled plot
+    axis while the typed value stays exact. Programmatic
+    :meth:`setValue`/:meth:`setRange`/:meth:`setScale` are silent (no
     ``valueChanged``); only user interaction emits, so the controller can sync it
     without feedback loops.
     """
 
     valueChanged = Signal(float)
+    _LOG_STEPS = 1000  # slider resolution when log-scaled
 
-    def __init__(self, minimum: int = 0, maximum: int = 100, value: int = 0, suffix: str = ""):
+    def __init__(self, minimum: int = 0, maximum: int = 100, value: int = 0,
+                 suffix: str = "", log: bool = False):
         super().__init__()
         self.slider = QSlider(Qt.Horizontal)
         self.spin = QSpinBox()
+        self._log = bool(log)
+        self._min = int(minimum)
+        self._max = max(self._min, int(maximum))
         if suffix:
             self.spin.setSuffix(suffix)
-        for w in (self.slider, self.spin):
-            w.setRange(minimum, maximum)
-            w.setValue(value)
         self.spin.setButtonSymbols(QSpinBox.NoButtons)
         self.spin.setMaximumWidth(78)
         self.slider.setMinimumWidth(60)
+        with QSignalBlocker(self.spin):
+            self.spin.setRange(self._min, self._max)
+            self.spin.setValue(int(value))
+        self._config_slider()
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -73,29 +85,65 @@ class SliderSpin(QWidget):
         self.slider.valueChanged.connect(self._from_slider)
         self.spin.valueChanged.connect(self._from_spin)
 
-    def _from_slider(self, v: int) -> None:
+    # -- slider position <-> value mapping (identity when linear) ------------
+    def _config_slider(self) -> None:
+        with QSignalBlocker(self.slider):
+            if self._log:
+                self.slider.setRange(0, self._LOG_STEPS)
+            else:
+                self.slider.setRange(self._min, self._max)
+            self.slider.setValue(self._pos_from_value(self.spin.value()))
+
+    def _log_bounds(self) -> tuple[int, int]:
+        lo = max(1, self._min)              # log needs a positive origin
+        return lo, max(lo + 1, self._max)
+
+    def _value_from_pos(self, p: int) -> int:
+        if not self._log:
+            return int(p)
+        lo, hi = self._log_bounds()
+        return int(round(lo * (hi / lo) ** (p / self._LOG_STEPS)))
+
+    def _pos_from_value(self, v: int) -> int:
+        if not self._log:
+            return int(v)
+        lo, hi = self._log_bounds()
+        v = min(max(int(v), lo), hi)
+        return int(round(self._LOG_STEPS * math.log(v / lo) / math.log(hi / lo)))
+
+    def _from_slider(self, p: int) -> None:
+        v = self._value_from_pos(p)
         if v != self.spin.value():
             with QSignalBlocker(self.spin):
                 self.spin.setValue(v)
         self.valueChanged.emit(float(v))
 
     def _from_spin(self, v: int) -> None:
-        if v != self.slider.value():
+        pos = self._pos_from_value(v)
+        if pos != self.slider.value():
             with QSignalBlocker(self.slider):
-                self.slider.setValue(v)
+                self.slider.setValue(pos)
         self.valueChanged.emit(float(v))
 
     def setRange(self, lo, hi) -> None:
-        lo, hi = int(lo), max(int(lo), int(hi))
-        with QSignalBlocker(self.slider), QSignalBlocker(self.spin):
-            self.slider.setRange(lo, hi)
-            self.spin.setRange(lo, hi)
+        self._min = int(lo)
+        self._max = max(self._min, int(hi))
+        with QSignalBlocker(self.spin):
+            self.spin.setRange(self._min, self._max)
+        self._config_slider()
 
     def setValue(self, v) -> None:
-        v = int(round(v))
-        with QSignalBlocker(self.slider), QSignalBlocker(self.spin):
-            self.slider.setValue(v)
-            self.spin.setValue(v)
+        with QSignalBlocker(self.spin):
+            self.spin.setValue(int(round(v)))
+        with QSignalBlocker(self.slider):
+            self.slider.setValue(self._pos_from_value(self.spin.value()))
+
+    def setScale(self, log: bool) -> None:
+        """Switch slider mapping between linear and log, preserving the value."""
+        if bool(log) == self._log:
+            return
+        self._log = bool(log)
+        self._config_slider()
 
     def value(self) -> int:
         return self.spin.value()
