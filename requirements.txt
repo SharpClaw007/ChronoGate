@@ -1,14 +1,17 @@
-# ChronoGate dependencies -- all permissive (BSD / MIT / PSF), no GPL.
+# ChronoGate dependencies -- all permissive (BSD / MIT / PSF / LGPL), no GPL.
 #
 # ptufile    BSD-3-Clause  -- reads PicoQuant .ptu TTTR files (the parser)
 # numpy      BSD-3-Clause  -- the cube, prefix sum, all numerics
-# matplotlib PSF/BSD-style -- the interactive GUI (SpanSelector + imshow)
+# matplotlib PSF/BSD-style -- the embedded decay & image plots (SpanSelector + imshow)
 # tifffile   BSD-3-Clause  -- writes the 16-bit raw TIFF export
+# PySide6    LGPL-3        -- the native Qt desktop UI (window, docks, widgets)
 #
-# tkinter (for the file-open dialog) ships with Python; on Homebrew Python you
-# may need `brew install python-tk`. It is OPTIONAL -- pass a file path instead.
+# PySide6 is a large wheel (~hundreds of MB). It ships abi3 wheels, so it works
+# on current CPython (incl. 3.14). The file dialogs use Qt now -- tkinter is no
+# longer required.
 
 ptufile>=2026.6.6
 numpy>=1.24
 matplotlib>=3.7
 tifffile>=2023.7.10
+PySide6>=6.7

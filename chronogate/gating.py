@@ -117,6 +117,53 @@ def gate_bounds_ns(lo_bin: int, hi_bin: int, resolution_ns: float) -> tuple[floa
     return lo_bin * resolution_ns, (hi_bin + 1) * resolution_ns
 
 
+def rld_lifetime(
+    na: np.ndarray, nb: np.ndarray, dt_ns: float, min_counts: float = 0.0
+) -> np.ndarray:
+    """Apparent lifetime from two gates via Rapid Lifetime Determination (RLD).
+
+    For a mono-exponential decay ``D(t) = D0 * exp(-t / tau)``, the photons
+    integrated over a gate ``[a, a + G]`` are
+    ``N = D0 * tau * exp(-a / tau) * (1 - exp(-G / tau))``. For two gates of
+    **equal width** ``G`` whose starts differ by ``dt = a_late - a_early``, the
+    width-and-amplitude factors cancel in the ratio, leaving
+
+        N_early / N_late = exp(dt / tau)   =>   tau = dt / ln(N_early / N_late).
+
+    This is the classic two-gate RLD estimator (Ballew & Demas): fit-free, one
+    division per pixel, exact for equal-width gates in the mono-exponential tail.
+
+    Parameters
+    ----------
+    na, nb : np.ndarray
+        Per-pixel photons in the **earlier** (``na``) and **later** (``nb``)
+        gate. Background should already be removed (so a flat pedestal does not
+        bias the ratio toward longer lifetimes).
+    dt_ns : float
+        Separation between the two gate *start* edges (later minus earlier), ns.
+    min_counts : float
+        Pixels with ``na`` or ``nb`` at or below this are too photon-starved to
+        trust and are returned as NaN.
+
+    Returns
+    -------
+    np.ndarray
+        ``tau`` per pixel (ns), with **NaN** where the estimate is not
+        physically meaningful: too few photons, or ``na <= nb`` (no measurable
+        decay across the gates -- noise or a rising edge), or ``dt_ns <= 0``.
+    """
+    na = np.asarray(na, dtype=np.float64)
+    nb = np.asarray(nb, dtype=np.float64)
+    shape = np.broadcast_shapes(na.shape, nb.shape)
+    if dt_ns <= 0:
+        return np.full(shape, np.nan)
+    # Valid only where both gates have signal and the decay actually decays.
+    valid = (na > min_counts) & (nb > min_counts) & (na > nb)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tau = dt_ns / np.log(na / nb)
+    return np.where(valid, tau, np.nan)
+
+
 def _moving_sum(a: np.ndarray, window: int, axis: int) -> np.ndarray:
     """Centered moving sum of size ``window`` along ``axis`` (edges clamped).
 
@@ -198,6 +245,15 @@ class GatingModel:
         self.t0_bin = detect_t0_bin(self.decay)
         self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
 
+        # IRF state (set via set_irf). When present, t0 comes from the IRF peak
+        # and an optional scatter subtraction can be applied in gate().
+        self.irf: np.ndarray | None = None          # unit-area, aligned to this grid
+        self.irf_prefix: np.ndarray | None = None   # cumsum for O(1) gate sums
+        self.instrument_window: tuple[int, int] | None = None  # IRF support [lo, hi]
+        self.irf_subtract = False
+        self.irf_scale = 1.0
+        self._irf_amp: np.ndarray | None = None      # cached per-pixel amplitude
+
     @property
     def resolution_ns(self) -> float:
         return self.cube.resolution_ns
@@ -222,17 +278,93 @@ class GatingModel:
     def gate(self, lo_bin: int, hi_bin: int, floor_per_bin: float | np.ndarray = 0.0) -> np.ndarray:
         """Gated intensity image for inclusive bins ``[lo_bin, hi_bin]``.
 
-        ``floor_per_bin`` is a background level in counts *per microtime bin*
-        (a scalar, applied uniformly, or a per-pixel array). It is subtracted as
-        ``floor_per_bin * gate_width`` from every pixel and clamped at 0. Pass 0
-        for no subtraction.
+        Two optional per-pixel, per-gate subtractions are composed, then clamped
+        at 0 (both stay O(pixels) via prefix sums):
+
+        * **noise floor** -- ``floor_per_bin * gate_width`` (scalar or per-pixel).
+        * **IRF scatter** -- when ``irf_subtract`` is on, ``irf_scale * a(p) *
+          (IRF summed over the gate)``, where ``a`` is the per-pixel prompt
+          amplitude (see :meth:`irf_amplitude`).
+
+        With neither active the raw integer image is returned unchanged.
         """
         img = gate_image(self.prefix, lo_bin, hi_bin)
-        nonzero = (floor_per_bin > 0) if np.isscalar(floor_per_bin) else np.any(floor_per_bin)
-        if not nonzero:
+        floor_on = (floor_per_bin > 0) if np.isscalar(floor_per_bin) else np.any(floor_per_bin)
+        irf_on = self.irf_subtract and self.irf_prefix is not None
+        if not floor_on and not irf_on:
             return img
-        width = abs(int(hi_bin) - int(lo_bin)) + 1
-        return apply_baseline(img, floor_per_bin, width)
+        lo, hi = sorted((int(lo_bin), int(hi_bin)))
+        out = img.astype(np.float64)
+        if floor_on:
+            out -= floor_per_bin * float(hi - lo + 1)
+        if irf_on:
+            irf_in_gate = float(self.irf_prefix[hi + 1] - self.irf_prefix[lo])
+            out -= self.irf_scale * self.irf_amplitude() * irf_in_gate
+        np.clip(out, 0, None, out=out)
+        return out
+
+    # -------------------------------------------------------------------- IRF
+    def set_irf(self, irf_aligned: np.ndarray) -> None:
+        """Attach a unit-area IRF (already on this model's bin grid).
+
+        Takes t0 from the IRF peak (rigorous, replacing the decay-peak guess),
+        recomputes the pre-pulse background for that t0, derives the instrument
+        window (the IRF support), and invalidates the cached amplitude.
+        """
+        self.irf = np.asarray(irf_aligned, dtype=np.float64)
+        self.irf_prefix = np.concatenate([[0.0], np.cumsum(self.irf)])
+        self.t0_bin = int(np.argmax(self.irf))
+        self.instrument_window = self._irf_support()
+        self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
+        self._irf_amp = None
+
+    def clear_irf(self) -> None:
+        """Detach the IRF and revert t0 to the decay-peak estimate."""
+        self.irf = self.irf_prefix = self.instrument_window = self._irf_amp = None
+        self.irf_subtract = False
+        self.t0_bin = detect_t0_bin(self.decay)
+        self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
+
+    def _irf_support(self, frac: float = 0.01) -> tuple[int, int]:
+        """Bins where the IRF is at least ``frac`` of its peak (the prompt window)."""
+        idx = np.where(self.irf >= frac * self.irf.max())[0]
+        if idx.size == 0:
+            return (self.t0_bin, self.t0_bin)
+        return (int(idx[0]), int(idx[-1]))
+
+    def irf_amplitude(self) -> np.ndarray:
+        """Per-pixel IRF amplitude ``a(Y, X)`` for the scatter subtraction, cached.
+
+        Anchored to each pixel's photons in the instrument window:
+        ``a(p) = (counts in window) / (IRF summed over window)``. With this
+        choice, subtracting ``scale * a * (IRF over the gate)`` removes a
+        well-defined, IRF-shaped fraction (``scale``) of the prompt-window signal
+        -- at ``scale=1`` the whole instrument window is removed from the gate.
+
+        This is deliberately an *operation with a tunable strength*, not an
+        automatic scatter/fluorescence separation: the two genuinely overlap at
+        the prompt (the convolved fluorescence peaks where the IRF does), so a
+        clean split needs deconvolution, which is out of scope. The robust way to
+        isolate the sample is the gating split (gate after the instrument window);
+        ``scale`` lets you additionally bleed out part of the prompt by eye.
+        """
+        if self._irf_amp is not None:
+            return self._irf_amp
+        lo, hi = self.instrument_window
+        irf_in_window = float(self.irf_prefix[hi + 1] - self.irf_prefix[lo])
+        win_counts = self._counts[:, :, lo:hi + 1].sum(axis=-1, dtype=np.int64).astype(np.float64)
+        self._irf_amp = (win_counts / irf_in_window if irf_in_window > 0
+                         else np.zeros(self._counts.shape[:2], dtype=np.float64))
+        return self._irf_amp
+
+    def instrument_image(self) -> np.ndarray:
+        """Raw photons inside the instrument window (the prompt/IRF region).
+
+        This is the "instrument" half of the gating split -- deliberately *not*
+        floor- or IRF-subtracted, since it *is* the instrument signal.
+        """
+        lo, hi = self.instrument_window
+        return gate_image(self.prefix, lo, hi)
 
     def t0_ns(self) -> float:
         return bin_to_ns(self.t0_bin, self.resolution_ns)
@@ -247,3 +379,41 @@ class GatingModel:
         if region.size == 0:
             return np.zeros(self.n_bins, dtype=float)
         return region.mean(axis=(0, 1), dtype=np.float64)
+
+    def rapid_lifetime(
+        self,
+        gate_a: tuple[int, int],
+        gate_b: tuple[int, int],
+        floor_per_bin: float | np.ndarray = 0.0,
+        min_counts: float = 0.0,
+    ) -> dict:
+        """Per-pixel apparent-lifetime map from two gates (two-gate RLD).
+
+        Each gate is an inclusive ``(lo_bin, hi_bin)`` pair. They are reordered
+        so the earlier one (smaller start bin) is treated as ``na``; the gated
+        photons are background-subtracted with the same ``floor_per_bin``
+        machinery as the intensity image (so a flat pedestal does not skew the
+        ratio). See :func:`rld_lifetime` for the estimator and masking.
+
+        Returns a dict with ``tau`` (Y, X, NaN where invalid), the early/late
+        gated images (``na``/``nb``), the start separation ``dt_ns``, the
+        ordered ``early``/``late`` gates, and ``equal_width`` (False warns the
+        caller that the equal-width RLD assumption is violated).
+        """
+        alo, ahi = sorted((int(gate_a[0]), int(gate_a[1])))
+        blo, bhi = sorted((int(gate_b[0]), int(gate_b[1])))
+        if blo < alo:  # ensure gate A is the earlier of the two
+            (alo, ahi), (blo, bhi) = (blo, bhi), (alo, ahi)
+        na = np.asarray(self.gate(alo, ahi, floor_per_bin), dtype=np.float64)
+        nb = np.asarray(self.gate(blo, bhi, floor_per_bin), dtype=np.float64)
+        dt_ns = (blo - alo) * self.resolution_ns
+        tau = rld_lifetime(na, nb, dt_ns, min_counts=min_counts)
+        return {
+            "tau": tau,
+            "na": na,
+            "nb": nb,
+            "dt_ns": dt_ns,
+            "early": (alo, ahi),
+            "late": (blo, bhi),
+            "equal_width": (ahi - alo) == (bhi - blo),
+        }

@@ -118,8 +118,15 @@ def export_all(
     vmax: float,
     metadata: dict[str, Any],
     settings: dict[str, Any],
+    colorbar_label: str = "photons in gate",
+    title: str | None = None,
 ) -> dict[str, str]:
-    """Write all four export artefacts. Returns a map of role -> file path."""
+    """Write all four export artefacts. Returns a map of role -> file path.
+
+    ``colorbar_label`` and ``title`` let a caller relabel the PNG for a
+    non-intensity raster (e.g. a lifetime map). ``title`` defaults to the
+    source-file-plus-gate string built from ``settings``.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -128,6 +135,12 @@ def export_all(
     csv_path = out_dir / f"{base}_decay.csv"
     json_path = out_dir / f"{base}_provenance.json"
 
+    if title is None:
+        title = (
+            f"{metadata.get('source_file', base)} | gate "
+            f"{settings.get('gate_lo_ns', '?')}-{settings.get('gate_hi_ns', '?')} ns"
+        )
+
     raw_dtype = _write_raw_tiff(raw_path, gated_image, {**metadata, "settings": settings})
     _write_color_png(
         png_path,
@@ -135,9 +148,8 @@ def export_all(
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,
-        title=f"{metadata.get('source_file', base)} | gate "
-        f"{settings.get('gate_lo_ns', '?')}-{settings.get('gate_hi_ns', '?')} ns",
-        colorbar_label="photons in gate",
+        title=title,
+        colorbar_label=colorbar_label,
     )
     _write_decay_csv(csv_path, time_ns, decay)
 

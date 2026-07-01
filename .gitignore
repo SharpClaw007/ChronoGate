@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-.run-venv/          # ephemeral environment built by ChronoGate.command
+.run-venv*/         # cached environments built by ChronoGate.command
 *.egg-info/
 
 # macOS
@@ -17,3 +17,4 @@ chronogate_exports/
 
 # Large raw data (kept local, not version-controlled)
 3_FLIM_stack_ptu/
+*.sptw/

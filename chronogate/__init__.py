@@ -24,5 +24,7 @@ FLIMfit project only as a *conceptual* reference for workflow conventions; no
 FLIMfit (GPL) source code was copied or ported.
 """
 
-__version__ = "0.1.0"
-__all__ = ["loader", "gating", "export", "viewer"]
+__version__ = "0.3.0"
+# Note: the Qt UI lives in the `ui` subpackage and is imported lazily (only when
+# the app launches), so importing this package stays dependency-light.
+__all__ = ["loader", "gating", "export", "ui"]

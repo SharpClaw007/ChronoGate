@@ -1,7 +1,8 @@
 """Command-line entry point: ``python -m chronogate [file.ptu] [options]``.
 
-Resolves a .ptu path (CLI arg, a directory to search, or a file dialog
-defaulting to the example data folder), then opens the interactive viewer.
+Resolves a .ptu path (a CLI arg or a directory to search) and opens the Qt app.
+With no argument, the app itself shows a native file picker at startup -- so this
+module stays Qt-free (and ``--help`` works without PySide6 or a display).
 """
 
 from __future__ import annotations
@@ -16,53 +17,67 @@ from .loader import UnsupportedFileError
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "3_FLIM_stack_ptu"
 
 
+def _reexec_native_arm64() -> None:
+    """On Apple Silicon under Rosetta, re-run this same interpreter natively.
+
+    The Qt GUI is much more stable as a native arm64 process. This works only for
+    a *universal2* interpreter (which has an arm64 slice) -- a single-architecture
+    x86-64 build (e.g. a conda env) is left as-is, and the app prints a warning
+    at launch suggesting a native Python or the ``ChronoGate.command`` launcher.
+    """
+    import os
+    import subprocess
+
+    if sys.platform != "darwin" or os.environ.get("CHRONOGATE_NATIVE"):
+        return
+    try:
+        translated = subprocess.run(
+            ["sysctl", "-in", "sysctl.proc_translated"],
+            capture_output=True, text=True).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return
+    if translated != "1":  # not running under Rosetta -> already native
+        return
+    exe = sys.executable
+    try:  # can THIS interpreter run as arm64 (i.e. is it universal2)?
+        can = subprocess.run(
+            ["arch", "-arm64", exe, "-c", "print(1)"],
+            capture_output=True, text=True, timeout=30).stdout.strip() == "1"
+    except Exception:  # noqa: BLE001
+        can = False
+    if not can:
+        return
+    os.environ["CHRONOGATE_NATIVE"] = "1"  # guard against a re-exec loop
+    try:
+        os.execvp("arch", ["arch", "-arm64", exe, "-m", "chronogate", *sys.argv[1:]])
+    except Exception:  # noqa: BLE001 - fall through and run translated
+        pass
+
+
 def _first_ptu_under(directory: Path) -> Path | None:
     matches = sorted(directory.rglob("*.ptu"))
     return matches[0] if matches else None
 
 
-def _pick_file_dialog() -> Path | None:
-    """Open a Tk open-file dialog defaulting to the example folder, if possible."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception:
-        return None
-    root = tk.Tk()
-    root.withdraw()
-    initial = _DEFAULT_DATA_DIR if _DEFAULT_DATA_DIR.exists() else Path.cwd()
-    chosen = filedialog.askopenfilename(
-        title="Open a PicoQuant .ptu file",
-        initialdir=str(initial),
-        filetypes=[("PicoQuant PTU", "*.ptu"), ("All files", "*.*")],
-    )
-    root.destroy()
-    return Path(chosen) if chosen else None
-
-
 def _resolve_path(arg: str | None) -> Path | None:
-    if arg:
-        p = Path(arg)
-        if p.is_dir():
-            return _first_ptu_under(p)
-        return p
-    # No argument: try a file dialog; if that's unavailable, grab the first
-    # example file so the tool still does something useful headlessly.
-    chosen = _pick_file_dialog()
-    if chosen:
-        return chosen
-    if _DEFAULT_DATA_DIR.exists():
-        return _first_ptu_under(_DEFAULT_DATA_DIR)
-    return None
+    """Resolve an explicit path/folder arg, or None to defer to the app's picker."""
+    if not arg:
+        return None
+    p = Path(arg)
+    if p.is_dir():
+        return _first_ptu_under(p)
+    return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    _reexec_native_arm64()  # go native on Apple Silicon before loading the GUI
+
     parser = argparse.ArgumentParser(
         prog="chronogate",
         description="Interactive time-gating viewer for PicoQuant FLIM (.ptu) data.",
     )
     parser.add_argument(
-        "path", nargs="?", help="A .ptu file, or a folder to search (defaults to a file dialog)."
+        "path", nargs="?", help="A .ptu file, or a folder to search (omit for a file picker)."
     )
     parser.add_argument("--channel", type=int, default=0, help="Detector channel (default 0).")
     parser.add_argument(
@@ -72,37 +87,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--settings", type=str, default=None, help="Load gate/view settings from a JSON file at startup."
     )
+    parser.add_argument(
+        "--lifetime", action="store_true",
+        help="Start in two-gate rapid-lifetime (RLD) mode.",
+    )
     args = parser.parse_args(argv)
 
     path = _resolve_path(args.path)
-    if path is None:
-        print("No .ptu file selected or found. Pass a file path explicitly.", file=sys.stderr)
+    if args.path and path is None:
+        print(f"No .ptu file found under: {args.path}", file=sys.stderr)
         return 2
-    if not path.exists():
+    if path is not None and not path.exists():
         print(f"File not found: {path}", file=sys.stderr)
         return 2
 
-    # Import the viewer lazily so --help works without a display/matplotlib GUI.
-    from .viewer import GatingViewer
+    # A default directory for the app's startup picker (when no path is given).
+    open_dir = str(_DEFAULT_DATA_DIR if _DEFAULT_DATA_DIR.exists() else Path.cwd())
+
+    # Import the Qt app lazily so --help works without PySide6 / a display.
+    from .ui.app import launch
 
     try:
-        viewer = GatingViewer(
+        return launch(
             path,
             channel=args.channel,
             sum_frames=(args.pick_frame is None),
+            settings_path=args.settings,
+            start_lifetime=args.lifetime,
+            open_dir=open_dir,
         )
     except UnsupportedFileError as exc:
         # Defensive parsing: report exactly what was found, no traceback noise.
         print(f"Cannot open this file: {exc}", file=sys.stderr)
         return 1
-
-    if args.settings:
-        from .export import load_settings
-
-        viewer._apply_settings(load_settings(args.settings))
-
-    viewer.show()
-    return 0
 
 
 if __name__ == "__main__":

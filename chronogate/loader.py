@@ -131,6 +131,7 @@ def load_ptu(
     channel: int = 0,
     frame: int | None = None,
     sum_frames: bool = True,
+    progress=None,
 ) -> FlimCube:
     """Read a .ptu file into a :class:`FlimCube`.
 
@@ -146,6 +147,15 @@ def load_ptu(
     sum_frames : bool
         If True (default), sum all frames in the file into one cube. If False,
         extract the single ``frame``.
+    progress : callable or None
+        Optional ``progress(done, total)`` callback invoked once per frame while
+        summing a multi-frame file (lets a GUI show/cancel a long decode).
+
+    Notes
+    -----
+    Frames are decoded **one at a time** (``decode_image(frame=t, channel=c)``)
+    and accumulated, so a long time-series never materializes the full
+    ``(T, Y, X, C, H)`` cube -- peak memory is one frame plus the result.
 
     Raises
     ------
@@ -186,30 +196,64 @@ def load_ptu(
                 f"channel(s) (valid: 0..{n_channels - 1})."
             )
 
-        # --- decode the photon stream into (T, Y, X, C, H) ---
+        # --- decode the photon stream one frame at a time ---
         ptu.use_xarray = False  # we want a plain numpy array back
-        arr = np.asarray(ptu.decode_image())
-        arr = _to_canonical(arr, tuple(ptu.dims))
-        n_frames = arr.shape[0]
+        dims = tuple(ptu.dims)
+        shape = tuple(ptu.shape)
+        n_frames = shape[dims.index("T")] if "T" in dims else 1
 
-        # Pick the detector channel -> (T, Y, X, H).
-        chan = arr[:, :, :, channel, :]
+        def _decode_frame(t: int) -> np.ndarray:
+            """Decode one frame of the chosen channel as a ``(Y, X, H)`` array.
 
-        # Reduce the frame axis. T==1 is the common case (one frame per file).
-        if sum_frames or n_frames == 1:
-            cube = chan.sum(axis=0)
-            frame_mode = "sum" if n_frames > 1 else "single frame"
-        else:
-            if frame is None or not (0 <= frame < n_frames):
-                raise UnsupportedFileError(
-                    f"requested frame {frame} but file has {n_frames} frame(s)."
-                )
-            cube = chan[frame]
-            frame_mode = f"frame {frame}"
+            Only this frame/channel is materialized (memory-safe for long
+            time-series). ``decode_image`` keeps size-1 T and C axes; we
+            canonicalize to ``(T, Y, X, C, H)`` and drop them.
+            """
+            kw = {}
+            if "T" in dims:
+                kw["frame"] = t
+            if "C" in dims:
+                kw["channel"] = channel
+            raw = np.asarray(ptu.decode_image(**kw))
+            raw = _to_canonical(raw, dims)
+            return raw[0, :, :, 0, :]
 
-        # Keep counts compact (uint16 is plenty per bin) for memory; the
-        # prefix-sum step widens to uint32 where accumulation could overflow.
-        cube = np.ascontiguousarray(cube, dtype=np.uint16)
+        try:
+            if not sum_frames and n_frames > 1:
+                if frame is None or not (0 <= frame < n_frames):
+                    raise UnsupportedFileError(
+                        f"requested frame {frame} but file has {n_frames} frame(s)."
+                    )
+                cube = _decode_frame(frame)
+                frame_mode = f"frame {frame}"
+            elif n_frames == 1:
+                cube = _decode_frame(0)
+                frame_mode = "single frame"
+            else:
+                # Sum all frames, accumulating in uint32 (a bright pixel/bin can
+                # exceed uint16 once summed over many frames).
+                cube = _decode_frame(0).astype(np.uint32)
+                if progress is not None:
+                    progress(1, n_frames)
+                for t in range(1, n_frames):
+                    cube += _decode_frame(t)
+                    if progress is not None:
+                        progress(t + 1, n_frames)
+                frame_mode = "sum"
+        except UnsupportedFileError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface ptufile decode failures cleanly
+            raise UnsupportedFileError(
+                f"{path.name!r}: could not reconstruct the image ({exc}). Some older "
+                f"PicoQuant 'old-style' image files are not supported by the decoder."
+            ) from exc
+
+        # Keep counts compact: uint16 if every bin fits, else uint32 (multi-frame
+        # sums can exceed 65535, where the old uint16 cast would have wrapped).
+        cube = np.asarray(cube)
+        if cube.dtype != np.uint16 and int(cube.max(initial=0)) <= 65535:
+            cube = cube.astype(np.uint16)
+        cube = np.ascontiguousarray(cube)
     finally:
         ptu.close()
 
@@ -226,6 +270,91 @@ def load_ptu(
         n_photons=n_photons,
         path=path,
     )
+
+
+@dataclass
+class Irf:
+    """An instrument response function read from a (point-mode) ``.ptu`` file.
+
+    The IRF is the system's temporal response to the excitation pulse -- a sharp
+    prompt peak. We keep the raw per-channel microtime histogram plus the timing
+    metadata needed to place it on a sample's bin grid.
+    """
+
+    counts: np.ndarray       # (H,) float, the histogram for the chosen channel
+    resolution_ns: float
+    n_bins: int
+    channel: int
+    path: Path
+    period_ns: float = float("nan")
+
+    @property
+    def peak_bin(self) -> int:
+        return int(np.argmax(self.counts))
+
+    def summary(self) -> str:
+        return (
+            f"IRF {self.path.name}: {self.n_bins} bins @ {self.resolution_ns*1000:.2f} ps, "
+            f"channel {self.channel}, peak at bin {self.peak_bin}, "
+            f"{int(self.counts.sum()):,} photons"
+        )
+
+    def aligned_to(self, resolution_ns: float, n_bins: int) -> np.ndarray:
+        """Return the IRF as a **unit-area** ``(n_bins,)`` array on a target grid.
+
+        If the resolutions match (the usual case -- IRF and sample share the
+        instrument), bins map one-to-one (padded/truncated to ``n_bins``).
+        Otherwise the histogram is resampled onto the target bin centres by
+        linear interpolation. Normalised to sum 1 so a fitted amplitude is in
+        photon units.
+        """
+        src = self.counts.astype(np.float64)
+        same_res = abs(resolution_ns - self.resolution_ns) <= 1e-9 * max(resolution_ns, 1e-9)
+        if same_res:
+            out = np.zeros(n_bins, dtype=np.float64)
+            m = min(n_bins, src.size)
+            out[:m] = src[:m]
+        else:
+            src_t = np.arange(src.size) * self.resolution_ns
+            tgt_t = np.arange(n_bins) * resolution_ns
+            out = np.interp(tgt_t, src_t, src, left=0.0, right=0.0)
+        total = out.sum()
+        if total > 0:
+            out = out / total
+        return out
+
+
+def load_irf(path: str | Path, channel: int = 0) -> Irf:
+    """Read an IRF from a point-mode ``.ptu`` file via its microtime histogram.
+
+    Unlike imaging files there is no X/Y; ``decode_histogram`` returns the
+    per-channel ``(C, H)`` microtime histogram, of which we take ``channel``.
+    """
+    path = Path(path)
+    try:
+        ptu = PtuFile(str(path))
+    except Exception as exc:  # noqa: BLE001
+        raise UnsupportedFileError(f"could not open {path.name!r} as a PTU file: {exc}") from exc
+    try:
+        resolution_ns = float(ptu.tcspc_resolution) * 1e9
+        n_channels = int(ptu.number_channels)
+        freq = float(ptu.frequency) if ptu.frequency else 0.0
+        period_ns = (1.0 / freq * 1e9) if freq else float("nan")
+        if resolution_ns <= 0:
+            raise UnsupportedFileError(f"{path.name!r}: bad microtime resolution for an IRF.")
+        if not (0 <= channel < n_channels):
+            raise UnsupportedFileError(
+                f"requested IRF channel {channel} but file has {n_channels} channel(s)."
+            )
+        ptu.use_xarray = False
+        hist = np.asarray(ptu.decode_histogram())
+        counts = (hist if hist.ndim == 1 else hist[channel]).astype(np.float64)
+    finally:
+        ptu.close()
+    if counts.sum() <= 0:
+        raise UnsupportedFileError(f"{path.name!r}: IRF channel {channel} contains no photons.")
+    return Irf(counts=counts, resolution_ns=resolution_ns, n_bins=int(counts.size),
+               channel=channel, path=path, period_ns=period_ns)
 
 
 def find_stack(path: str | Path) -> list[Path]:
