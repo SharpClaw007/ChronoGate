@@ -170,57 +170,6 @@ def test_rld_recovers_known_lifetime() -> None:
           f"(true {tau_true}); masking and Delta-t=0 guards hold.")
 
 
-def _synthetic_irf_cube(a_scatter: float):
-    """A (Y, X, H) cube of identical pixels: a_scatter*IRF + convolved fluorescence."""
-    n, res = 400, 0.016
-    t = np.arange(n)
-    irf = np.exp(-0.5 * ((t - 60) / 5.0) ** 2)
-    irf /= irf.sum()  # unit area
-    decay = np.where(t >= 0, np.exp(-t / 120.0), 0.0)
-    fluor = np.convolve(decay, irf)[:n]
-    fluor *= 4000.0 / fluor.max()
-    pix = a_scatter * irf + fluor
-    counts = np.round(np.broadcast_to(pix, (10, 10, n))).astype(np.uint16).copy()
-    cube = FlimCube(counts=counts, resolution_ns=res, period_ns=res * n, n_bins=n,
-                    record_type="synthetic", channel=0, n_channels=1,
-                    frame_mode="single frame", n_frames=1, n_photons=int(counts.sum()),
-                    path=Path("synthetic.ptu"))
-    return cube, irf
-
-
-def test_irf_isolation_and_subtraction() -> None:
-    cube, irf = _synthetic_irf_cube(2500.0)
-    m = gating.GatingModel(cube)
-    m.set_irf(irf)
-
-    # 1) t0 + the instrument window come from the IRF (rigorous t0).
-    assert m.t0_bin == int(np.argmax(irf))
-    lo, hi = m.instrument_window
-    assert lo <= int(np.argmax(irf)) <= hi, "instrument window must bracket the IRF peak"
-
-    # 2) the IRF-subtracted gate equals a direct per-bin subtraction (clamped) --
-    #    the prefix-sum form is exact and stays O(pixels).
-    m.irf_subtract = True
-    a = m.irf_amplitude()
-    g = m.gate(40, 120)
-    raw = m._counts[:, :, 40:121].sum(-1).astype(float)
-    direct = np.clip(raw - a * float(irf[40:121].sum()), 0, None)
-    assert np.allclose(g, direct), "prefix-sum IRF subtraction must match direct"
-
-    # 3) at scale=1 the subtraction removes exactly the prompt-window signal,
-    #    so the instrument-window gate of the residual is ~0 (well-defined op).
-    win = m.gate(lo, hi)
-    assert np.allclose(win, 0.0), "scale=1 must remove the whole instrument window"
-
-    # 4) brighter pixels get a proportionally larger amplitude (intensity-anchored).
-    cube2, irf2 = _synthetic_irf_cube(2500.0)
-    cube2.counts[0, 0] = (cube2.counts[0, 0].astype(np.int64) * 3).clip(0, 65535).astype(np.uint16)
-    m2 = gating.GatingModel(cube2); m2.set_irf(irf2)
-    amp = m2.irf_amplitude()
-    assert amp[0, 0] > 1.5 * float(np.median(amp)), "amplitude must scale with prompt intensity"
-    print("OK: IRF t0/window, exact prefix-sum subtraction, well-defined scale, intensity-anchored.")
-
-
 def test_mono_exponential_fit_recovers_tau():
     """The display fit should recover a known tau from a noisy, low-count decay."""
     rng = np.random.default_rng(0)
@@ -250,7 +199,6 @@ if __name__ == "__main__":
         test_time_axis_is_calibrated()
         test_spatial_binning_matches_brute_force()
         test_rld_recovers_known_lifetime()
-        test_irf_isolation_and_subtraction()
         test_mono_exponential_fit_recovers_tau()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

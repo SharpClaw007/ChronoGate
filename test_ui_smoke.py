@@ -138,41 +138,6 @@ def test_lifetime_export_and_settings_roundtrip() -> None:
           f"median tau ~ {np.median(finite):.2f} ns.")
 
 
-def test_irf_flow() -> None:
-    from chronogate.loader import Irf
-    w = _window()
-    c = w.controller
-    m = c.model
-    # A synthetic IRF on the sample's grid (no IRF .ptu needed for the test).
-    peak = 30
-    irf_counts = np.exp(-0.5 * ((np.arange(m.n_bins) - peak) / 3.0) ** 2) * 1000.0
-    irf = Irf(counts=irf_counts, resolution_ns=m.resolution_ns, n_bins=m.n_bins,
-              channel=0, path=Path("synthetic_irf.ptu"))
-    c.irf = irf
-    c.irf_channel = 0
-    c._reapply_irf()
-    w.irf.set_irf_controls_enabled(True)
-
-    assert c.model.irf is not None
-    assert c.model.t0_bin == peak, "t0 must come from the IRF peak"
-    lo, hi = c.model.instrument_window
-    assert lo <= peak <= hi, "instrument window must bracket the IRF peak"
-
-    # Instrument view + sample view both render; subtraction + scale apply.
-    c.irf_view = "instrument"; c._refresh_image()
-    c.irf_view = "sample"
-    c.irf_subtract = True; c.model.irf_subtract = True
-    c.irf_scale = 0.5; c.model.irf_scale = 0.5
-    c._refresh_image()
-
-    # Provenance carries the IRF fields.
-    out = Path(tempfile.mkdtemp())
-    paths = c.export(out)
-    s = json.loads(next(out.glob("*_provenance.json")).read_text())["settings"]
-    assert s["irf_file"] == "synthetic_irf.ptu" and s["t0_from_irf"] and s["irf_subtract"]
-    assert s["instrument_window"] == [lo, hi]
-    print("OK: IRF flow — t0 from peak, instrument window, subtraction, provenance.")
-
 
 class _FakeEvent:
     """Minimal stand-in for a matplotlib MouseEvent (bypasses coord translation)."""
@@ -186,6 +151,9 @@ def test_picks_and_keyboard_helpers() -> None:
     c = w.controller
     c._add_pixel(40, 40)
     assert len(c.picks) == 1 and w.picks.list.count() == 1
+    # A second pick REPLACES the first (single decay at a time, not cumulative).
+    c._add_pixel(70, 70)
+    assert len(c.picks) == 1 and c.picks[0]["r"] == 70, "new pick must replace, not accumulate"
     w.picks.btn_clear.click()
     assert len(c.picks) == 0 and w.picks.list.count() == 0
 
@@ -269,7 +237,6 @@ if __name__ == "__main__":
         test_window_builds_and_renders()
         test_welcome_state_and_folder_load()
         test_lifetime_export_and_settings_roundtrip()
-        test_irf_flow()
         test_picks_and_keyboard_helpers()
         test_fit_overlay()
         test_floor_slider_per_pixel_and_scale()

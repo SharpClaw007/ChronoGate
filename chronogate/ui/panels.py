@@ -329,60 +329,36 @@ class BinningPanel(QGroupBox):
         lay.addLayout(row)
 
 
-class IrfPanel(QGroupBox):
-    """Instrument-response controls: load an IRF, view Sample/Instrument, subtract."""
+class StatsPanel(QGroupBox):
+    """Read-only statistics for the current gated image, refreshed on every gate
+    change. The controller pushes a small ``{label: value}`` map via
+    :meth:`set_stats` (4 rows: intensity-gate stats, or the τ-map stats in
+    lifetime mode)."""
+
+    _ROWS = 4
 
     def __init__(self):
-        super().__init__("IRF (instrument response)")
-        self.btn_load = QPushButton("Load IRF…")
-        self.btn_clear = QPushButton("Clear")
-        self.btn_clear.setMaximumWidth(64)
-        self.name_label = _muted("none loaded")
-        self.channel = QComboBox()
-        self.channel.setToolTip("Detector channel within the IRF file.")
-        self.radio_sample = QRadioButton("sample")
-        self.radio_instrument = QRadioButton("instrument")
-        self.radio_sample.setChecked(True)
-        self.radio_sample.setToolTip("Image the fluorescence after the IRF window.")
-        self.radio_instrument.setToolTip("Image the photons inside the IRF (prompt) window.")
-        self._grp = QButtonGroup(self)
-        self._grp.addButton(self.radio_sample)
-        self._grp.addButton(self.radio_instrument)
-        self.subtract = QCheckBox("subtract scatter (approx)")
-        self.subtract.setToolTip("Subtract an IRF-shaped fraction of the prompt-window signal per pixel.")
-        self.scale = SliderSpin(0, 200, 100, suffix=" %")
-        self.scale.setToolTip("Fraction of the prompt-window signal removed (100% = the whole window).")
-
-        lay = _col(self)
-        top = QHBoxLayout()
-        top.setSpacing(6)
-        top.addWidget(self.btn_load)
-        top.addWidget(self.btn_clear)
-        lay.addLayout(top)
-        lay.addWidget(self.name_label)
+        super().__init__("Stats")
+        self._keys = [_muted("") for _ in range(self._ROWS)]
+        self._vals = [QLabel("") for _ in range(self._ROWS)]
         form = _form()
-        form.addRow("IRF channel", self.channel)
+        for k, v in zip(self._keys, self._vals):
+            v.setWordWrap(True)
+            form.addRow(k, v)
+        lay = _col(self)
         lay.addLayout(form)
-        view = QHBoxLayout()
-        view.setSpacing(12)
-        view.addWidget(_muted("View:"))
-        view.addWidget(self.radio_sample)
-        view.addWidget(self.radio_instrument)
-        view.addStretch(1)
-        lay.addLayout(view)
-        lay.addWidget(self.subtract)
-        sform = _form()
-        sform.addRow("scatter", self.scale)
-        lay.addLayout(sform)
-        self.set_irf_controls_enabled(False)
+        self.set_stats({"": "load a file to see stats"})
 
-    def set_loaded_name(self, text: str) -> None:
-        self.name_label.setText(text)
-
-    def set_irf_controls_enabled(self, on: bool) -> None:
-        for w in (self.btn_clear, self.channel, self.radio_sample, self.radio_instrument,
-                  self.subtract, self.scale):
-            w.setEnabled(on)
+    def set_stats(self, stats: dict) -> None:
+        items = list(stats.items())
+        for i in range(self._ROWS):
+            has = i < len(items)
+            self._keys[i].setVisible(has)
+            self._vals[i].setVisible(has)
+            if has:
+                key, val = items[i]
+                self._keys[i].setText(key)
+                self._vals[i].setText(str(val))
 
 
 class FilePanel(QGroupBox):

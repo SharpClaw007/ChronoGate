@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         self.picks = panels.PicksPanel()
         self.binning = panels.BinningPanel()
         self.filep = panels.FilePanel()
-        self.irf = panels.IrfPanel()
+        self.stats = panels.StatsPanel()
 
         self._build_actions()
 
@@ -145,7 +145,7 @@ class MainWindow(QMainWindow):
         columns = [
             (self.gate, self.picks),
             (self.display, self.binning),
-            (self.lifetime, self.irf),
+            (self.lifetime, self.stats),
             (self.filep,),
         ]
         for group in columns:
@@ -166,7 +166,6 @@ class MainWindow(QMainWindow):
         self.act_open = QAction("&Open .ptu…", self, shortcut=QKeySequence.Open)
         self.act_open_folder = QAction("Open &folder (stack)…", self,
                                        shortcut=QKeySequence("Ctrl+Shift+O"))
-        self.act_load_irf = QAction("Load &IRF…", self)
         self.act_export = QAction("&Export", self, shortcut=QKeySequence("Ctrl+E"))
         self.act_save = QAction("&Save settings", self, shortcut=QKeySequence("Ctrl+S"))
         self.act_load = QAction("&Load settings", self, shortcut=QKeySequence("Ctrl+L"))
@@ -195,7 +194,6 @@ class MainWindow(QMainWindow):
         m_file = mb.addMenu("&File")
         m_file.addAction(self.act_open)
         m_file.addAction(self.act_open_folder)
-        m_file.addAction(self.act_load_irf)
         m_file.addAction(self.act_export)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
@@ -219,7 +217,6 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         tb.addAction(self.act_open)
         tb.addAction(self.act_open_folder)
-        tb.addAction(self.act_load_irf)
         tb.addAction(self.act_export)
         tb.addSeparator()
         tb.addAction(self.act_intensity)
@@ -231,7 +228,6 @@ class MainWindow(QMainWindow):
         # File actions reuse the panel buttons' wiring (connected in bind_view).
         self.act_open.triggered.connect(self.filep.btn_open.click)
         self.act_open_folder.triggered.connect(self.filep.btn_open_folder.click)
-        self.act_load_irf.triggered.connect(self.irf.btn_load.click)
         self.act_export.triggered.connect(self.filep.btn_export.click)
         self.act_save.triggered.connect(self.filep.btn_save.click)
         self.act_load.triggered.connect(self.filep.btn_load.click)
@@ -256,7 +252,7 @@ class MainWindow(QMainWindow):
         actions are disabled -- only the Open actions stay live.
         """
         self._stack.setCurrentWidget(self._workspace if loaded else self._welcome)
-        for a in (self.act_export, self.act_save, self.act_load, self.act_load_irf,
+        for a in (self.act_export, self.act_save, self.act_load,
                   self.act_intensity, self.act_lifetime, self.act_log, self.act_floor):
             a.setEnabled(loaded)
 

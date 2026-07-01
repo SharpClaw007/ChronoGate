@@ -63,15 +63,19 @@ in real time.
 - **Instant dragging** via a precomputed **prefix sum** along the microtime axis:
   each gate update is O(number of pixels), independent of gate width.
 - **Per-pixel & ROI decays:** **click** any pixel or **drag a box** on the image
-  to overlay that pixel/region's decay on the left panel. Single-pixel decays are
+  to show that pixel/region's decay on the left panel. Each pick **replaces** the
+  last — one decay at a time, not a cumulative overlay. Single-pixel decays are
   photon-starved, so the display is **smoothed** (a `smooth` time-bin window) and
   can be spatially averaged (an `avg` *N×N* box) for a clean curve. An **exp fit**
   toggle overlays a **mono-exponential fit** (a Poisson-weighted log-linear fit, so
   the noisy low-count tail is smoothly extrapolated rather than fit step-by-step)
-  and reports the apparent **τ** — a visual guide, not a rigorous IRF-deconvolved
-  lifetime. All three are display-only (gating/export use the raw counts). Picks
-  accumulate as a colour-coded list (labelled with photons-in-gate and τ);
-  **Clear picks** resets.
+  and reports the apparent **τ** — a visual guide, not a rigorous multi-exponential
+  fit. All three are display-only (gating/export use the raw counts). **Clear**
+  resets to the total decay.
+- **Live gated-image stats:** a **Stats** panel updates on every gate change with
+  the gate range (ns / bins), total photons in gate (and its % of all photons),
+  the number of signal pixels, and the per-pixel gated counts (mean / median /
+  max) — or the τ-map summary in lifetime mode.
 - **Spatial binning (pool photons):** a **bin** factor sums each pixel's *B×B*
   neighborhood (sliding, so the image keeps its size and coordinates), giving
   ≈B²× more photons per pixel — the standard fix for photon-starved single-pixel
@@ -81,10 +85,11 @@ in real time.
   line, e.g. *"median signal pixel ≈ 35 photons → 2×2 (≈140/px)."*
 - **Honest images:**
   - a **dim-pixel intensity threshold** (mask pixels whose *total* photons are low), and
-  - an adjustable **noise floor** — a background level (counts/bin), drawn as a
-    line on the decay and subtracted (× gate width) from each pixel's gated
-    intensity, clamped at 0. It defaults to the auto pre-pulse estimate and is
-    on by default; toggle **subtract floor** off for raw counts.
+  - an adjustable **noise floor** — a per-pixel background level (counts/bin per
+    pixel), drawn as a line on the decay and subtracted (× gate width) from each
+    pixel's gated integral, clamped at 0. It **auto-generates just above the
+    pre-pulse noise band** (mean + 3σ of the pre-signal bins) and is on by
+    default; toggle **subtract floor** off for raw counts.
 - **Layer / file selection:** **Open .ptu file…** loads any file (re-detecting
   its numbered stack); for a numbered series (`..._z1.ptu` … `..._z65.ptu`) a
   **z-slice** slider steps through the planes. The current file/layer is shown
@@ -93,23 +98,6 @@ in real time.
   **PNG with colorbar**, a **decay CSV**, and a **provenance JSON** logging the
   source file, header parameters, and the exact gate/threshold/noise-floor/channel used.
 - **Save / load settings** so a figure can be regenerated identically.
-
-### IRF (instrument response) support
-Load an **IRF** (a point-mode `.ptu`, read as its microtime histogram) to separate
-the instrument's prompt response from the sample fluorescence:
-
-- **Rigorous t0** — taken from the IRF peak (replacing the decay-peak heuristic),
-  and the IRF is overlaid on the decay with its **instrument window** (the prompt
-  support) shaded.
-- **Gating split (robust, default)** — the main gate auto-places *after* the
-  instrument window, so the image shows true **sample** fluorescence; a *View*
-  toggle shows the **instrument** image (photons inside the prompt window). No
-  fitting — just time-gating.
-- **Approximate scatter subtraction (optional)** — a *subtract scatter* toggle
-  removes an IRF-shaped, per-pixel fraction (the **scatter %** slider) of the
-  prompt-window signal. It is deliberately a *tunable operation*, not an automatic
-  scatter/fluorescence split: the two genuinely overlap at the prompt, so a clean
-  separation needs deconvolution (below).
 
 ### Deliberately out of scope (use FLIMfit)
 Exponential/global lifetime fitting and **IRF reconvolution/deconvolution**,
@@ -188,8 +176,8 @@ ChronoGate is a native desktop app (PySide6/Qt) with the two plots embedded as
 matplotlib canvases. The two plots sit across the **top** (a wide landscape decay
 and a near-square image), with all the **controls in a rack along the bottom** —
 every control visible at once, and a draggable divider to trade height between
-the plots and the rack. A **menubar**, a **toolbar** (Open · Open folder · Load
-IRF · Export · Intensity / Lifetime · Log Y), a **status bar**, and keyboard
+the plots and the rack. A **menubar**, a **toolbar** (Open · Open folder ·
+Export · Intensity / Lifetime · Log Y), a **status bar**, and keyboard
 shortcuts wrap the analysis.
 
 **Opening data:** launching with no argument shows a **welcome screen** with
@@ -288,8 +276,8 @@ found.
 
 ```
 chronogate/
-  loader.py        # ptufile wrapper -> FlimCube (per-frame decode) + Irf + z-stack
-  gating.py        # prefix sum, O(1) gating, ns/t0/baseline maths, two-gate RLD, IRF
+  loader.py        # ptufile wrapper -> FlimCube (per-frame decode) + z-stack
+  gating.py        # prefix sum, O(1) per-pixel gating, ns/t0/baseline maths, two-gate RLD
   export.py        # 16-bit/float TIFF + colormapped PNG + decay CSV + provenance JSON
   __main__.py      # CLI entry (python -m chronogate)
   ui/              # the PySide6 desktop app (all Qt code lives here)

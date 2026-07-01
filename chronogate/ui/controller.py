@@ -32,7 +32,7 @@ from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from .. import gating
-from ..loader import find_stack, load_ptu, load_irf
+from ..loader import find_stack, load_ptu
 from ..export import export_all, load_settings, save_settings
 from . import theme
 
@@ -45,7 +45,6 @@ _PICK_COLORS = [
     "#D1495B", "#2FA84F", "#7C3AED", "#9C6644", "#E76FA1",
     "#8A8D2B", "#0EA5B5", "#E8833A", "#C026D3", "#65A30D",
 ]
-_MAX_PICKS = 10
 
 INTENSITY_CMAPS = ["viridis", "gray", "magma", "inferno", "cividis"]
 LIFETIME_CMAPS = ["turbo", "viridis", "plasma", "inferno", "cividis"]
@@ -95,14 +94,6 @@ class ViewerController(QObject):
         self.lifetime_cmap = "turbo"
         self.rld_min_counts = 10.0
         self._lifetime_init = False
-        # IRF (instrument response) state.
-        self.irf = None                # loader.Irf, or None
-        self.irf_channel = 0
-        self.irf_view = "sample"       # "sample" | "instrument" (intensity mode)
-        self.irf_subtract = False
-        self.irf_scale = 1.0
-        self.irf_line = None           # decay overlay artist
-        self._irf_band = None          # instrument-window axvspan
         self.picks: list[dict] = []
         self._pick_lines: list = []
         self._gate_fills: list = []
@@ -215,12 +206,6 @@ class ViewerController(QObject):
         w.filep.btn_export.clicked.connect(self._on_export)
         w.filep.btn_save.clicked.connect(self._on_save)
         w.filep.btn_load.clicked.connect(self._on_load)
-        w.irf.btn_load.clicked.connect(self._on_load_irf)
-        w.irf.btn_clear.clicked.connect(self._on_clear_irf)
-        w.irf.channel.currentIndexChanged.connect(self._on_irf_channel)
-        w.irf.radio_sample.toggled.connect(self._on_irf_view)
-        w.irf.subtract.toggled.connect(self._on_irf_subtract)
-        w.irf.scale.valueChanged.connect(self._on_irf_scale)
         w.act_intensity.triggered.connect(lambda: self._enter_mode("intensity"))
         w.act_lifetime.triggered.connect(lambda: self._enter_mode("lifetime"))
         w.act_log.toggled.connect(self._on_log)
@@ -253,8 +238,7 @@ class ViewerController(QObject):
                    w.display.cmap, w.lifetime.radio_a, w.lifetime.radio_b,
                    w.lifetime.min_cts, w.lifetime.cmap_life, w.picks.avg, w.picks.smooth, w.picks.fit,
                    w.binning.bin, w.binning.target, w.filep.z, w.filep.channel,
-                   w.act_intensity, w.act_lifetime, w.act_log, w.act_floor,
-                   w.irf.radio_sample, w.irf.radio_instrument, w.irf.subtract, w.irf.scale]
+                   w.act_intensity, w.act_lifetime, w.act_log, w.act_floor]
         with _blocked(*widgets):
             w.gate.spin_lo.setValue(lo_ns)
             w.gate.spin_hi.setValue(hi_ns)
@@ -276,12 +260,6 @@ class ViewerController(QObject):
             w.act_lifetime.setChecked(self.mode == "lifetime")
             w.act_log.setChecked(self.log_scale)
             w.act_floor.setChecked(self.apply_floor)
-            w.irf.radio_sample.setChecked(self.irf_view == "sample")
-            w.irf.radio_instrument.setChecked(self.irf_view == "instrument")
-            w.irf.subtract.setChecked(self.irf_subtract)
-            w.irf.scale.setValue(int(round(self.irf_scale * 100)))
-        w.irf.set_irf_controls_enabled(self.irf is not None)
-        w.irf.set_loaded_name(self.irf.path.name if self.irf is not None else "none loaded")
         w.gate.set_active_label(self.edit_target, self.mode)
         w.set_lifetime_enabled(self.mode == "lifetime")
 
@@ -444,27 +422,6 @@ class ViewerController(QObject):
         else:
             self.floor_line.set_visible(False)
 
-        # IRF overlay (scaled to the decay peak) + a faint instrument-window band.
-        if self._irf_band is not None:
-            self._irf_band.remove()
-            self._irf_band = None
-        if self.model.irf is not None:
-            irf = self.model.irf
-            scale = (data_max / irf.max()) if irf.max() > 0 else 1.0
-            # Show only the prompt (>=1% of peak); the sparse baseline scaled up is
-            # just noise. NaN leaves gaps so the line draws only where it matters.
-            shown = np.where(irf >= 0.01 * irf.max(), irf * scale, np.nan)
-            if self.irf_line is None:
-                (self.irf_line,) = ax.plot([], [], color=theme.MUTED, lw=1.3,
-                                           alpha=0.9, label="_nolegend_")
-            self.irf_line.set_data(x, shown)
-            self.irf_line.set_visible(True)
-            ilo, ihi = self.model.instrument_window
-            a0, a1 = gating.gate_bounds_ns(ilo, ihi, res)
-            self._irf_band = ax.axvspan(a0, a1, color=theme.MUTED, alpha=0.08, lw=0)
-        elif self.irf_line is not None:
-            self.irf_line.set_visible(False)
-
         leg = ax.get_legend()
         if picks_mode:
             ax.legend(fontsize=7, loc="upper right", framealpha=0.85)
@@ -511,29 +468,15 @@ class ViewerController(QObject):
 
     def _refresh_intensity_image(self) -> None:
         res = self.model.resolution_ns
-        instrument = self.irf is not None and self.irf_view == "instrument"
-        if instrument:
-            # The "instrument" half of the gating split: raw prompt-window photons.
-            gated = self.model.instrument_image()
-            ilo, ihi = self.model.instrument_window
-            a0, a1 = gating.gate_bounds_ns(ilo, ihi, res)
-            title = (f"instrument (prompt) window  {a0:.2f}–{a1:.2f} ns\n"
-                     f"{int(self.model.decay[ilo:ihi + 1].sum()):,} photons")
-            cbar_label = "photons (prompt)"
-        else:
-            floor = self._floor_per_pixel() if self.apply_floor else 0.0
-            gated = self.model.gate(self.gate_lo_bin, self.gate_hi_bin, floor_per_bin=floor)
-            lo_ns, hi_ns = gating.gate_bounds_ns(self.gate_lo_bin, self.gate_hi_bin, res)
-            t0 = self.model.t0_ns()
-            # Report the photons actually in the (background-/IRF-subtracted,
-            # clamped) image, so the number tracks the noise floor and IRF just
-            # like the picture does -- not the raw decay sum.
-            in_gate = int(gated.sum())
-            unit = "photons" if self.bin_size == 1 else f"cts ·{self.bin_size}×{self.bin_size}"
-            tag = " (sample, IRF-sub)" if (self.irf is not None and self.irf_subtract) else ""
-            title = (f"gate {lo_ns:.2f}–{hi_ns:.2f} ns  (t0{lo_ns - t0:+.1f}…{hi_ns - t0:+.1f}){tag}\n"
-                     f"{in_gate:,} {unit} in gate")
-            cbar_label = "photons in gate"
+        # Per pixel: integrate that pixel's decay over the gate, minus the floor.
+        floor = self._floor_per_pixel() if self.apply_floor else 0.0
+        gated = self.model.gate(self.gate_lo_bin, self.gate_hi_bin, floor_per_bin=floor)
+        lo_ns, hi_ns = gating.gate_bounds_ns(self.gate_lo_bin, self.gate_hi_bin, res)
+        t0 = self.model.t0_ns()
+        in_gate = int(gated.sum())
+        unit = "photons" if self.bin_size == 1 else f"cts ·{self.bin_size}×{self.bin_size}"
+        title = (f"gate {lo_ns:.2f}–{hi_ns:.2f} ns  (t0{lo_ns - t0:+.1f}…{hi_ns - t0:+.1f})\n"
+                 f"{in_gate:,} {unit} in gate")
 
         display = gated.astype(float)
         if self.threshold > 0:
@@ -542,9 +485,29 @@ class ViewerController(QObject):
         self.im.set_cmap(self._image_cmap("intensity"))
         self.im.set_data(display)
         self.im.set_clim(vmin, vmax)
-        self.cbar.set_label(cbar_label)
+        self.cbar.set_label("photons in gate")
         self.ic.ax.set_title(title, fontsize=9)
         self.ic.draw_idle()
+        self._update_stats(gated, lo_ns, hi_ns)
+
+    def _update_stats(self, gated, lo_ns: float, hi_ns: float) -> None:
+        """Push gated-image statistics into the Stats panel (intensity mode)."""
+        if self.w is None:
+            return
+        width_bins = abs(self.gate_hi_bin - self.gate_lo_bin) + 1
+        total = int(self.model.intensity.sum())
+        in_gate = float(gated.sum())
+        signal = gated[gated > 0]
+        npix = int(signal.size)
+        unit = "photons" if self.bin_size == 1 else f"cts·{self.bin_size}²"
+        self.w.stats.set_stats({
+            "Gate": f"{lo_ns:.2f}–{hi_ns:.2f} ns  ({width_bins} bins · {hi_ns - lo_ns:.2f} ns)",
+            f"In gate": f"{int(in_gate):,} {unit}"
+                       + (f"  ({100 * in_gate / total:.1f}% of all)" if total > 0 else ""),
+            "Signal px": f"{npix:,} / {self.model.n_pixels:,}",
+            "Per-px": (f"mean {signal.mean():.1f} · med {np.median(signal):.0f} · max {int(signal.max()):,}"
+                       if npix else "—"),
+        })
 
     def _compute_lifetime_map(self):
         floor = self._floor_per_pixel() if self.apply_floor else 0.0
@@ -579,6 +542,13 @@ class ViewerController(QObject):
             f"RLD τ map  ·  Δt {rl['dt_ns']:.2f} ns\n"
             f"median τ ≈ {med:.2f} ns  ·  {finite.size:,} px{warn}", fontsize=9)
         self.ic.draw_idle()
+        if self.w is not None:
+            self.w.stats.set_stats({
+                "Mode": "lifetime (two-gate RLD)",
+                "Gates": f"A {a0:.1f}–{a1:.1f} · B {b0:.1f}–{b1:.1f} ns  (Δt {rl['dt_ns']:.2f}){warn}",
+                "Median τ": f"{med:.2f} ns" if finite.size else "—",
+                "Valid px": f"{finite.size:,} / {self.model.n_pixels:,}",
+            })
 
     # --------------------------------------------------------- gate handlers
     def _apply_gate(self, xmin: float, xmax: float) -> None:
@@ -780,11 +750,11 @@ class ViewerController(QObject):
         self._add_pick({"kind": "pixel", "r": r, "c": c, "label": f"px({r},{c})"})
 
     def _add_pick(self, pick: dict) -> None:
-        self.picks.append(pick)
-        if len(self.picks) > _MAX_PICKS:
-            self.picks.pop(0)
+        # A new pick *replaces* the current one (single decay at a time), rather
+        # than accumulating a cumulative overlay.
+        self.picks = [pick]
         self._refresh_decay()
-        self.statusMessage.emit(f"{len(self.picks)} pick(s): " + "; ".join(p["label"] for p in self.picks))
+        self.statusMessage.emit(f"Showing decay for {pick['label']}.")
 
     def _clear_picks(self) -> None:
         self.picks = []
@@ -844,7 +814,6 @@ class ViewerController(QObject):
 
     def _rebuild_binned_model(self) -> None:
         self.model = gating.GatingModel(self.model.cube, bin_factor=self.bin_size)
-        self._reapply_irf()
         # Binning changes the per-pixel scale, so reset the floor to its default.
         self.noise_floor_pp = self.model.auto_noise_floor_pp()
         self._refit_ranges()
@@ -886,7 +855,6 @@ class ViewerController(QObject):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.model = self._load_current()
-            self._reapply_irf()
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -956,10 +924,6 @@ class ViewerController(QObject):
         self.model = model
         self.picks = []
         self.threshold = 0
-        self.irf = None  # an IRF belongs to a specific sample; drop it on a new file
-        if self.w is not None:
-            self.w.irf.set_irf_controls_enabled(False)
-            self.w.irf.set_loaded_name("none loaded")
         self.noise_floor_pp = model.auto_noise_floor_pp()
         if first:
             self.gate_lo_bin = model.t0_bin
@@ -981,93 +945,6 @@ class ViewerController(QObject):
             self._refresh_decay()
             self._refresh_image()
 
-    # ------------------------------------------------------------------- IRF
-    def _on_load_irf(self) -> None:
-        if self.model is None:
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self.w, "Load an IRF (.ptu) file", self._dialog_dir(),
-            "PicoQuant PTU (*.ptu);;All files (*)", "", _DLG_OPT)
-        if path:
-            self._apply_irf_file(path, channel=0, auto_gate=True)
-
-    def _apply_irf_file(self, path, channel: int, auto_gate: bool) -> None:
-        try:
-            irf = load_irf(path, channel=channel)
-        except Exception as exc:  # noqa: BLE001 - report cleanly
-            self.statusMessage.emit(f"Could not load IRF: {exc}")
-            return
-        self.irf = irf
-        self.irf_channel = channel
-        self._reapply_irf()
-        if auto_gate:
-            lo, hi = self.model.instrument_window
-            self.gate_lo_bin = min(hi + 1, self.model.n_bins - 1)
-            self.gate_hi_bin = self.model.n_bins - 1
-        if self.w is not None:
-            self.w.irf.set_irf_controls_enabled(True)
-            self.w.irf.set_loaded_name(f"{irf.path.name}  (peak bin {irf.peak_bin})")
-            self._sync_irf_channel_combo(irf)
-        self.statusMessage.emit(
-            f"IRF loaded: {irf.path.name} — t0 set from the IRF peak; "
-            f"instrument window {self.model.instrument_window}.")
-        self._refresh_decay()
-        self._refresh_image()
-
-    def _reapply_irf(self) -> None:
-        """(Re)align the loaded IRF onto the current model and push subtract/scale."""
-        if self.irf is None or self.model is None:
-            return
-        self.model.set_irf(self.irf.aligned_to(self.model.resolution_ns, self.model.n_bins))
-        self.model.irf_subtract = self.irf_subtract
-        self.model.irf_scale = self.irf_scale
-
-    def _sync_irf_channel_combo(self, irf) -> None:
-        from ptufile import PtuFile
-        try:
-            p = PtuFile(str(irf.path)); nch = int(p.number_channels); p.close()
-        except Exception:  # noqa: BLE001
-            nch = self.irf_channel + 1
-        with _blocked(self.w.irf.channel):
-            self.w.irf.channel.clear()
-            self.w.irf.channel.addItems([str(c) for c in range(max(1, nch))])
-            self.w.irf.channel.setCurrentIndex(min(self.irf_channel, nch - 1))
-            self.w.irf.channel.setEnabled(nch > 1)
-
-    def _on_clear_irf(self) -> None:
-        if self.model is not None:
-            self.model.clear_irf()
-        self.irf = None
-        if self.w is not None:
-            self.w.irf.set_irf_controls_enabled(False)
-            self.w.irf.set_loaded_name("none loaded")
-        self.statusMessage.emit("IRF cleared; t0 reverts to the decay-peak estimate.")
-        self._refresh_decay()
-        self._refresh_image()
-
-    def _on_irf_channel(self, idx: int) -> None:
-        if idx < 0 or self.irf is None:
-            return
-        self._apply_irf_file(self.irf.path, channel=int(idx), auto_gate=False)
-
-    def _on_irf_view(self, _checked=None) -> None:
-        if self.w is None:
-            return
-        self.irf_view = "sample" if self.w.irf.radio_sample.isChecked() else "instrument"
-        self._refresh_image()
-
-    def _on_irf_subtract(self, checked) -> None:
-        self.irf_subtract = bool(checked)
-        if self.model is not None:
-            self.model.irf_subtract = self.irf_subtract
-        self._refresh_image()
-
-    def _on_irf_scale(self, val) -> None:
-        self.irf_scale = max(0.0, float(val) / 100.0)
-        if self.model is not None:
-            self.model.irf_scale = self.irf_scale
-        if self.irf_subtract:
-            self._refresh_image()
 
     # --------------------------------------------------------- provenance / IO
     def _metadata(self) -> dict:
@@ -1098,14 +975,6 @@ class ViewerController(QObject):
             "gateB_lo_bin": self.gateB_lo_bin, "gateB_hi_bin": self.gateB_hi_bin,
             "gateB_lo_ns": round(blo_ns, 4), "gateB_hi_ns": round(bhi_ns, 4),
             "lifetime_cmap": self.lifetime_cmap, "rld_min_counts": self.rld_min_counts,
-            "irf_file": (self.irf.path.name if self.irf is not None else None),
-            "irf_channel": self.irf_channel if self.irf is not None else None,
-            "irf_view": self.irf_view,
-            "instrument_window": (list(self.model.instrument_window)
-                                  if self.model.instrument_window is not None else None),
-            "t0_from_irf": self.irf is not None,
-            "irf_subtract": self.irf_subtract,
-            "irf_scale": self.irf_scale,
         }
 
     def _current_image_for_export(self):

@@ -304,15 +304,6 @@ class GatingModel:
         self.t0_bin = detect_t0_bin(self.decay)
         self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
 
-        # IRF state (set via set_irf). When present, t0 comes from the IRF peak
-        # and an optional scatter subtraction can be applied in gate().
-        self.irf: np.ndarray | None = None          # unit-area, aligned to this grid
-        self.irf_prefix: np.ndarray | None = None   # cumsum for O(1) gate sums
-        self.instrument_window: tuple[int, int] | None = None  # IRF support [lo, hi]
-        self.irf_subtract = False
-        self.irf_scale = 1.0
-        self._irf_amp: np.ndarray | None = None      # cached per-pixel amplitude
-
     @property
     def resolution_ns(self) -> float:
         return self.cube.resolution_ns
@@ -335,12 +326,24 @@ class GatingModel:
         return float(self.bg_per_bin.sum())
 
     def auto_noise_floor_pp(self) -> float:
-        """Auto background as counts/bin *per pixel* -- the default floor value.
+        """Auto per-pixel floor placed just **above the pre-pulse noise band**.
 
-        This is what :meth:`gate` actually subtracts from each pixel; it equals
-        :meth:`auto_noise_floor_total` divided by the pixel count.
+        The bins before the pulse (``[0, t0-guard]``) hold only the baseline noise
+        of the first, pre-signal photons. We take the summed pre-pulse decay's
+        ``mean + 3*std`` -- the top of that noise band, so ~all noise bins fall
+        below it -- and divide by the pixel count to get the per-pixel floor
+        :meth:`gate` subtracts. Falls back gracefully when there are too few
+        pre-pulse bins to estimate a spread.
         """
-        return float(self.bg_per_bin.mean())
+        hi = max(0, self.t0_bin - 3)
+        pre = self.decay[:hi].astype(np.float64)
+        if pre.size >= 2:
+            level = float(pre.mean() + 3.0 * pre.std())
+        elif pre.size == 1:
+            level = float(pre[0])
+        else:
+            level = float(self.bg_per_bin.sum())
+        return level / max(1, self.n_pixels)
 
     def peak_counts_per_bin(self) -> int:
         """The brightest single-pixel, single-bin count.
@@ -354,93 +357,21 @@ class GatingModel:
     def gate(self, lo_bin: int, hi_bin: int, floor_per_bin: float | np.ndarray = 0.0) -> np.ndarray:
         """Gated intensity image for inclusive bins ``[lo_bin, hi_bin]``.
 
-        Two optional per-pixel, per-gate subtractions are composed, then clamped
-        at 0 (both stay O(pixels) via prefix sums):
-
-        * **noise floor** -- ``floor_per_bin * gate_width`` (scalar or per-pixel).
-        * **IRF scatter** -- when ``irf_subtract`` is on, ``irf_scale * a(p) *
-          (IRF summed over the gate)``, where ``a`` is the per-pixel prompt
-          amplitude (see :meth:`irf_amplitude`).
-
-        With neither active the raw integer image is returned unchanged.
+        Per pixel, this integrates that pixel's decay over the gate (a single
+        prefix-sum subtraction). An optional per-pixel **noise floor** --
+        ``floor_per_bin * gate_width`` (scalar or per-pixel) -- is then removed
+        and the result clamped at 0. With no floor the raw integer image is
+        returned unchanged. O(pixels) regardless of gate width.
         """
         img = gate_image(self.prefix, lo_bin, hi_bin)
         floor_on = (floor_per_bin > 0) if np.isscalar(floor_per_bin) else np.any(floor_per_bin)
-        irf_on = self.irf_subtract and self.irf_prefix is not None
-        if not floor_on and not irf_on:
+        if not floor_on:
             return img
         lo, hi = sorted((int(lo_bin), int(hi_bin)))
         out = img.astype(np.float64)
-        if floor_on:
-            out -= floor_per_bin * float(hi - lo + 1)
-        if irf_on:
-            irf_in_gate = float(self.irf_prefix[hi + 1] - self.irf_prefix[lo])
-            out -= self.irf_scale * self.irf_amplitude() * irf_in_gate
+        out -= floor_per_bin * float(hi - lo + 1)
         np.clip(out, 0, None, out=out)
         return out
-
-    # -------------------------------------------------------------------- IRF
-    def set_irf(self, irf_aligned: np.ndarray) -> None:
-        """Attach a unit-area IRF (already on this model's bin grid).
-
-        Takes t0 from the IRF peak (rigorous, replacing the decay-peak guess),
-        recomputes the pre-pulse background for that t0, derives the instrument
-        window (the IRF support), and invalidates the cached amplitude.
-        """
-        self.irf = np.asarray(irf_aligned, dtype=np.float64)
-        self.irf_prefix = np.concatenate([[0.0], np.cumsum(self.irf)])
-        self.t0_bin = int(np.argmax(self.irf))
-        self.instrument_window = self._irf_support()
-        self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
-        self._irf_amp = None
-
-    def clear_irf(self) -> None:
-        """Detach the IRF and revert t0 to the decay-peak estimate."""
-        self.irf = self.irf_prefix = self.instrument_window = self._irf_amp = None
-        self.irf_subtract = False
-        self.t0_bin = detect_t0_bin(self.decay)
-        self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
-
-    def _irf_support(self, frac: float = 0.01) -> tuple[int, int]:
-        """Bins where the IRF is at least ``frac`` of its peak (the prompt window)."""
-        idx = np.where(self.irf >= frac * self.irf.max())[0]
-        if idx.size == 0:
-            return (self.t0_bin, self.t0_bin)
-        return (int(idx[0]), int(idx[-1]))
-
-    def irf_amplitude(self) -> np.ndarray:
-        """Per-pixel IRF amplitude ``a(Y, X)`` for the scatter subtraction, cached.
-
-        Anchored to each pixel's photons in the instrument window:
-        ``a(p) = (counts in window) / (IRF summed over window)``. With this
-        choice, subtracting ``scale * a * (IRF over the gate)`` removes a
-        well-defined, IRF-shaped fraction (``scale``) of the prompt-window signal
-        -- at ``scale=1`` the whole instrument window is removed from the gate.
-
-        This is deliberately an *operation with a tunable strength*, not an
-        automatic scatter/fluorescence separation: the two genuinely overlap at
-        the prompt (the convolved fluorescence peaks where the IRF does), so a
-        clean split needs deconvolution, which is out of scope. The robust way to
-        isolate the sample is the gating split (gate after the instrument window);
-        ``scale`` lets you additionally bleed out part of the prompt by eye.
-        """
-        if self._irf_amp is not None:
-            return self._irf_amp
-        lo, hi = self.instrument_window
-        irf_in_window = float(self.irf_prefix[hi + 1] - self.irf_prefix[lo])
-        win_counts = self._counts[:, :, lo:hi + 1].sum(axis=-1, dtype=np.int64).astype(np.float64)
-        self._irf_amp = (win_counts / irf_in_window if irf_in_window > 0
-                         else np.zeros(self._counts.shape[:2], dtype=np.float64))
-        return self._irf_amp
-
-    def instrument_image(self) -> np.ndarray:
-        """Raw photons inside the instrument window (the prompt/IRF region).
-
-        This is the "instrument" half of the gating split -- deliberately *not*
-        floor- or IRF-subtracted, since it *is* the instrument signal.
-        """
-        lo, hi = self.instrument_window
-        return gate_image(self.prefix, lo, hi)
 
     def t0_ns(self) -> float:
         return bin_to_ns(self.t0_bin, self.resolution_ns)
