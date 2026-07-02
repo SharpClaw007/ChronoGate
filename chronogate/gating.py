@@ -72,14 +72,20 @@ def bin_to_ns(bin_index: float, resolution_ns: float) -> float:
 
 
 def detect_t0_bin(decay: np.ndarray) -> int:
-    """Estimate t0 (the excitation-pulse position) as the decay's peak bin.
+    """Estimate t0 (the excitation-pulse position) as the **smoothed** peak bin.
 
     Rigorous lifetime fitting derives t0 from a measured IRF; for a *gating*
-    viewer the peak of the rising edge is the pragmatic, defensible reference.
-    We report gate edges relative to this so an offset like "t0 + 1.2 ns" is
-    meaningful, but we never silently ignore where the pulse sits.
+    viewer the peak of the rising edge is the pragmatic, defensible reference. We
+    smooth the decay with a short moving average before taking the peak, so a
+    single noisy bin on a dim/scattery sample can't drag t0 around. Users can
+    still override t0 manually (see :meth:`GatingModel.set_t0`).
     """
-    return int(np.argmax(decay))
+    d = np.asarray(decay, dtype=np.float64)
+    if d.size >= 5:
+        k = max(3, d.size // 100 | 1)          # odd window, ~1% of the axis
+        kernel = np.ones(k, dtype=np.float64) / k
+        d = np.convolve(d, kernel, mode="same")
+    return int(np.argmax(d))
 
 
 def background_per_bin(cube: np.ndarray, t0_bin: int, guard_bins: int = 3) -> np.ndarray:
@@ -375,6 +381,11 @@ class GatingModel:
 
     def t0_ns(self) -> float:
         return bin_to_ns(self.t0_bin, self.resolution_ns)
+
+    def set_t0(self, bin_index: int) -> None:
+        """Override t0 (the pulse reference) and recompute the pre-pulse background."""
+        self.t0_bin = int(max(0, min(self.n_bins - 1, bin_index)))
+        self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
 
     def pixel_decay(self, r0: int, r1: int, c0: int, c1: int) -> np.ndarray:
         """Mean decay (counts/bin per pixel) over the region rows [r0,r1) cols [c0,c1).

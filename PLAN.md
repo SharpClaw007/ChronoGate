@@ -7,15 +7,15 @@ test and a green run of both suites.
 
 ## Wave A — core usability (fastest payoff)
 
-- [ ] **1. Frame cache for z-stacks.** `_on_zslice` re-decodes the `.ptu` from
+- [x] **1. Frame cache for z-stacks.** `_on_zslice` re-decodes the `.ptu` from
   disk on every plane change. Add a bounded LRU cache of decoded `GatingModel`s
   keyed by `(path, channel, sum_frames, bin_size)` so stepping a stack is
   instant. Evict by count/bytes to bound memory.
-- [ ] **2. Lock color range.** `_clim_from` recomputes percentiles per frame, so
+- [x] **2. Lock color range.** `_clim_from` recomputes percentiles per frame, so
   z-stepping remaps the colormap and planes can't be compared. Add a **"lock
   scale"** toggle (freeze vmin/vmax) plus optional manual min/max entry, applied
   in both intensity and lifetime modes.
-- [ ] **3. Robust t0.** `t0 = argmax(decay)` is fragile on dim/scattery data.
+- [x] **3. Robust t0.** `t0 = argmax(decay)` is fragile on dim/scattery data.
   Smooth the summed decay before argmax and take the leading-edge rise; expose a
   **manual t0** override (a small control) and show t0 prominently.
 

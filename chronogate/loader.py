@@ -20,11 +20,47 @@ Design choices worth knowing:
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from ptufile import PtuFile
+
+
+class FrameCache:
+    """A byte-bounded LRU cache of decoded cubes, so revisiting a z-plane (or a
+    channel) is instant instead of re-reading the file.
+
+    Keys are opaque (the caller uses ``(path, channel, sum_frames)``); values are
+    :class:`FlimCube`. Eviction is least-recently-used until the cached cubes fit
+    under ``max_bytes`` (measured by ``counts.nbytes``). Single huge cubes are
+    still stored (an item larger than the cap simply lives alone).
+    """
+
+    def __init__(self, max_bytes: int = 1_500_000_000):
+        self.max_bytes = int(max_bytes)
+        self._store: "OrderedDict[object, FlimCube]" = OrderedDict()
+        self._bytes = 0
+
+    def get(self, key):
+        cube = self._store.get(key)
+        if cube is not None:
+            self._store.move_to_end(key)
+        return cube
+
+    def put(self, key, cube: "FlimCube") -> None:
+        if key in self._store:
+            self._bytes -= int(self._store.pop(key).counts.nbytes)
+        self._store[key] = cube
+        self._bytes += int(cube.counts.nbytes)
+        while self._bytes > self.max_bytes and len(self._store) > 1:
+            _, old = self._store.popitem(last=False)
+            self._bytes -= int(old.counts.nbytes)
+
+    def clear(self) -> None:
+        self._store.clear()
+        self._bytes = 0
 
 # Canonical axis order ptufile uses for a decoded image. We never hardcode the
 # *positions*; we look the names up in ``ptu.dims`` so odd files still work.

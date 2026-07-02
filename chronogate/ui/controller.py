@@ -32,7 +32,7 @@ from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from .. import gating
-from ..loader import find_stack, load_ptu
+from ..loader import find_stack, load_ptu, FrameCache
 from ..export import export_all, load_settings, save_settings
 from . import theme
 
@@ -78,8 +78,13 @@ class ViewerController(QObject):
         self.z_index = 0
         self.channel = channel
         self.sum_frames = sum_frames
+        self._cube_cache = FrameCache()  # decoded cubes, so z/channel revisits are instant
 
         # Analysis state (the authoritative values; widgets render these).
+        self.lock_scale = False           # freeze the colour range across frames
+        self._locked_clim: dict = {}      # mode -> (vmin, vmax) while locked
+        self._auto_clim: dict = {}        # mode -> last auto-scaled (vmin, vmax)
+        self.manual_t0_ns = None          # None = auto (smoothed-peak) t0
         self.log_scale = True
         self.apply_floor = True
         self.threshold = 0
@@ -113,13 +118,18 @@ class ViewerController(QObject):
         self._build_artists()
 
     # ----------------------------------------------------------------- loading
-    def _load_current(self) -> gating.GatingModel:
-        # Decode synchronously (no QProgressDialog/processEvents): re-entering the
-        # Qt event loop mid-decode is a known crash source, especially on macOS
-        # under Rosetta. A busy cursor is shown by the callers instead.
-        cube = load_ptu(self.stack[self.z_index], channel=self.channel,
-                        sum_frames=self.sum_frames)
-        print(cube.summary())
+    def _load_current(self, progress=None) -> gating.GatingModel:
+        # A decoded cube is cached per (file, channel, sum_frames), so stepping
+        # back to a plane already visited (or a channel already seen) is instant;
+        # only a first-time decode touches the disk.
+        path = self.stack[self.z_index]
+        key = (str(path), self.channel, self.sum_frames)
+        cube = self._cube_cache.get(key)
+        if cube is None:
+            cube = load_ptu(path, channel=self.channel, sum_frames=self.sum_frames,
+                            progress=progress)
+            print(cube.summary())
+            self._cube_cache.put(key, cube)
         return gating.GatingModel(cube, bin_factor=self.bin_size)
 
     def _floor_per_pixel(self) -> float:
@@ -189,6 +199,11 @@ class ViewerController(QObject):
         w.display.thr.valueChanged.connect(self._on_threshold)
         w.display.floor.valueChanged.connect(self._on_noise_floor)
         w.display.cmap.currentTextChanged.connect(self._on_cmap)
+        w.display.lock.toggled.connect(self._on_lock_scale)
+        w.display.vmin.valueChanged.connect(self._on_manual_clim)
+        w.display.vmax.valueChanged.connect(self._on_manual_clim)
+        w.gate.t0.valueChanged.connect(self._on_t0)
+        w.gate.btn_t0_auto.clicked.connect(self._on_t0_auto)
         w.lifetime.radio_a.toggled.connect(self._on_edit_radio)
         w.lifetime.min_cts.valueChanged.connect(self._on_min_counts)
         w.lifetime.cmap_life.currentTextChanged.connect(self._on_lifetime_cmap)
@@ -219,8 +234,10 @@ class ViewerController(QObject):
         w.display.thr.setRange(0, max(1, tmax))
         w.display.floor.setRange(*self._floor_slider_range())
         w.display.floor.setScale(self.log_scale)  # slider matches the decay's y-scale
-        w.gate.spin_lo.setRange(0.0, self.model.cube.period_ns if np.isfinite(self.model.cube.period_ns) else 1e6)
-        w.gate.spin_hi.setRange(0.0, self.model.cube.period_ns if np.isfinite(self.model.cube.period_ns) else 1e6)
+        period = self.model.cube.period_ns if np.isfinite(self.model.cube.period_ns) else 1e6
+        w.gate.spin_lo.setRange(0.0, period)
+        w.gate.spin_hi.setRange(0.0, period)
+        w.gate.t0.setRange(0.0, period)
         w.filep.z.setRange(0, max(0, len(self.stack) - 1))
         w.filep.z.setEnabled(len(self.stack) > 1)
         with _blocked(w.filep.channel):
@@ -234,14 +251,18 @@ class ViewerController(QObject):
         w = self.w
         res = self.model.resolution_ns
         lo_ns, hi_ns = gating.gate_bounds_ns(*self._get_gate(self.edit_target), res)
-        widgets = [w.gate.spin_lo, w.gate.spin_hi, w.display.thr, w.display.floor,
+        widgets = [w.gate.spin_lo, w.gate.spin_hi, w.gate.t0, w.display.thr, w.display.floor,
                    w.display.cmap, w.lifetime.radio_a, w.lifetime.radio_b,
                    w.lifetime.min_cts, w.lifetime.cmap_life, w.picks.avg, w.picks.smooth, w.picks.fit,
                    w.binning.bin, w.binning.target, w.filep.z, w.filep.channel,
-                   w.act_intensity, w.act_lifetime, w.act_log, w.act_floor]
+                   w.act_intensity, w.act_lifetime, w.act_log, w.act_floor, w.display.lock]
         with _blocked(*widgets):
             w.gate.spin_lo.setValue(lo_ns)
             w.gate.spin_hi.setValue(hi_ns)
+            w.gate.t0.setValue(self.model.t0_ns())
+            w.display.lock.setChecked(self.lock_scale)
+            w.display.vmin.setEnabled(self.lock_scale)
+            w.display.vmax.setEnabled(self.lock_scale)
             w.display.thr.setValue(self.threshold)
             w.display.floor.setValue(min(self.noise_floor_pp, w.display.floor.maximum()))
             w.display.cmap.setCurrentText(self.cmap)
@@ -458,6 +479,24 @@ class ViewerController(QObject):
             vmin, vmax = 0.0, floor_gap
         return vmin, vmax
 
+    def _clim_for(self, mode: str, finite, lo_pct, hi_pct, floor_gap=1.0):
+        """Colour limits for ``mode``: auto-scaled per frame, or frozen when the
+        scale is locked (so z-planes are directly comparable). Also records the
+        auto value and pushes the active range into the min/max boxes."""
+        auto = self._clim_from(finite, lo_pct, hi_pct, floor_gap)
+        self._auto_clim[mode] = auto
+        if self.lock_scale:
+            if self._locked_clim.get(mode) is None:
+                self._locked_clim[mode] = auto
+            vmin, vmax = self._locked_clim[mode]
+        else:
+            vmin, vmax = auto
+        if self.w is not None and self.mode == mode:
+            with _blocked(self.w.display.vmin, self.w.display.vmax):
+                self.w.display.vmin.setValue(vmin)
+                self.w.display.vmax.setValue(vmax)
+        return vmin, vmax
+
     def _refresh_image(self) -> None:
         if self.model is None:
             return
@@ -481,7 +520,7 @@ class ViewerController(QObject):
         display = gated.astype(float)
         if self.threshold > 0:
             display[self.model.intensity < self.threshold] = np.nan
-        vmin, vmax = self._clim_from(display[np.isfinite(display)], 1, 99)
+        vmin, vmax = self._clim_for("intensity", display[np.isfinite(display)], 1, 99)
         self.im.set_cmap(self._image_cmap("intensity"))
         self.im.set_data(display)
         self.im.set_clim(vmin, vmax)
@@ -525,7 +564,7 @@ class ViewerController(QObject):
             self.statusMessage.emit(
                 f"No pixels reached N ≥ {self.rld_min_counts:.0f} photons in BOTH gates — "
                 f"increase binning (Auto) or lower 'min cts' to get a lifetime map.")
-        vmin, vmax = self._clim_from(finite, 2, 98, floor_gap=1e-3)
+        vmin, vmax = self._clim_for("lifetime", finite, 2, 98, floor_gap=1e-3)
         self.im.set_cmap(self._image_cmap("lifetime"))
         self.im.set_data(tau)
         self.im.set_clim(vmin, vmax)
@@ -814,6 +853,7 @@ class ViewerController(QObject):
 
     def _rebuild_binned_model(self) -> None:
         self.model = gating.GatingModel(self.model.cube, bin_factor=self.bin_size)
+        self._apply_manual_t0()
         # Binning changes the per-pixel scale, so reset the floor to its default.
         self.noise_floor_pp = self.model.auto_noise_floor_pp()
         self._refit_ranges()
@@ -831,6 +871,50 @@ class ViewerController(QObject):
 
     def _on_floor(self, checked) -> None:
         self.apply_floor = bool(checked)
+        self._refresh_decay()
+        self._refresh_image()
+
+    def _on_lock_scale(self, checked) -> None:
+        self.lock_scale = bool(checked)
+        if checked:
+            self._locked_clim = dict(self._auto_clim)   # freeze the current ranges
+        else:
+            self._locked_clim = {}
+        if self.w is not None:
+            self.w.display.vmin.setEnabled(checked)
+            self.w.display.vmax.setEnabled(checked)
+        self._refresh_image()
+
+    def _on_manual_clim(self, _val=None) -> None:
+        if not self.lock_scale or self.w is None:
+            return
+        vmin = self.w.display.vmin.value()
+        vmax = max(self.w.display.vmax.value(), vmin + 1e-6)
+        self._locked_clim[self.mode] = (vmin, vmax)
+        self._refresh_image()
+
+    def _apply_manual_t0(self) -> None:
+        """Re-apply a manual t0 (if set) to the current model, e.g. after reload."""
+        if self.manual_t0_ns is not None and self.model is not None:
+            self.model.set_t0(gating.ns_to_bin(
+                self.manual_t0_ns, self.model.resolution_ns, self.model.n_bins))
+
+    def _on_t0(self, val_ns) -> None:
+        if self.model is None:
+            return
+        self.manual_t0_ns = float(val_ns)
+        self.model.set_t0(gating.ns_to_bin(val_ns, self.model.resolution_ns, self.model.n_bins))
+        self._refresh_decay()
+        self._refresh_image()
+
+    def _on_t0_auto(self) -> None:
+        if self.model is None:
+            return
+        self.manual_t0_ns = None
+        self.model.set_t0(gating.detect_t0_bin(self.model.decay))
+        if self.w is not None:
+            with _blocked(self.w.gate.t0):
+                self.w.gate.t0.setValue(self.model.t0_ns())
         self._refresh_decay()
         self._refresh_image()
 
@@ -855,6 +939,7 @@ class ViewerController(QObject):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.model = self._load_current()
+            self._apply_manual_t0()
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -970,7 +1055,7 @@ class ViewerController(QObject):
             "noise_floor_total": round(self.noise_floor_pp * self.model.n_pixels, 4),
             "subtract_floor": self.apply_floor, "bin_size": self.bin_size, "bin_target": self.bin_target,
             "box_size": self.box_size, "smooth_bins": self.smooth_bins, "fit_curve": self.fit_curve,
-            "log_scale": self.log_scale,
+            "log_scale": self.log_scale, "lock_scale": self.lock_scale, "manual_t0_ns": self.manual_t0_ns,
             "cmap": self.cmap, "mode": self.mode, "edit_target": self.edit_target,
             "gateB_lo_bin": self.gateB_lo_bin, "gateB_hi_bin": self.gateB_hi_bin,
             "gateB_lo_ns": round(blo_ns, 4), "gateB_hi_ns": round(bhi_ns, 4),
@@ -1070,6 +1155,10 @@ class ViewerController(QObject):
         self.smooth_bins = int(s.get("smooth_bins", self.smooth_bins))
         self.fit_curve = bool(s.get("fit_curve", self.fit_curve))
         self.log_scale = bool(s.get("log_scale", self.log_scale))
+        self.lock_scale = bool(s.get("lock_scale", self.lock_scale))
+        mt0 = s.get("manual_t0_ns", None)
+        self.manual_t0_ns = float(mt0) if mt0 is not None else None
+        self._apply_manual_t0()
         self.cmap = s.get("cmap", self.cmap)
 
         if "gateB_lo_bin" in s and "gateB_hi_bin" in s:

@@ -199,6 +199,37 @@ def test_fit_overlay() -> None:
     print(f"OK: exp-fit overlay toggles (fit {'drawn' if fit_ok else 'skipped: no decay'}).")
 
 
+def test_cache_lockscale_and_t0() -> None:
+    _window()  # ensure a QApplication exists
+    from chronogate.ui.main_window import MainWindow
+    w = MainWindow(None, open_dir=str(DATA_DIR))
+    c = w.controller
+    c.load_folder(str(DATA_DIR))
+    # frame cache: revisiting a plane is a cache hit (no re-decode)
+    c.step_z(1)
+    key = (str(c.stack[c.z_index]), c.channel, c.sum_frames)
+    assert c._cube_cache.get(key) is not None, "current plane must be cached"
+    c.step_z(-1); c.step_z(1)
+    assert c._cube_cache.get(key) is not None, "revisited plane must still be cached"
+
+    # lock scale freezes the colour range across planes
+    c.z_index = 0; c._reload_model_busy(); c._refit_ranges(); c._refresh_image()
+    c._on_lock_scale(True)
+    vmax = c._locked_clim["intensity"][1]
+    c.step_z(1)
+    assert abs(c.im.get_clim()[1] - vmax) < 1e-6, "locked vmax persists across planes"
+    c._on_lock_scale(False)
+
+    # manual t0 override persists across a plane change
+    t = c.model.t0_ns() + 0.4
+    c._on_t0(t)
+    c.step_z(1)
+    assert abs(c.model.t0_ns() - t) < 0.25, "manual t0 persists across planes"
+    c._on_t0_auto()
+    assert c.manual_t0_ns is None
+    print("OK: frame cache hits, lock-scale freezes clim, manual t0 persists & resets.")
+
+
 def test_floor_slider_per_pixel_and_scale() -> None:
     import math
     w = _window()
@@ -239,6 +270,7 @@ if __name__ == "__main__":
         test_lifetime_export_and_settings_roundtrip()
         test_picks_and_keyboard_helpers()
         test_fit_overlay()
+        test_cache_lockscale_and_t0()
         test_floor_slider_per_pixel_and_scale()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
