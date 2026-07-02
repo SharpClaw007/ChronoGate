@@ -96,6 +96,11 @@ def test_window_builds_and_renders() -> None:
     c = w.controller
     assert c.mode == "intensity"
     assert c.im.get_array() is not None and c.decay_line.get_xdata().size > 0
+    # the image extent must match the data shape (else it's squished into a
+    # corner and the panel looks blank; also keeps mouse-picking in pixel coords)
+    ny, nx = c.model.intensity.shape
+    assert list(c.im.get_extent()) == [-0.5, nx - 0.5, ny - 0.5, -0.5], c.im.get_extent()
+    assert c.im.get_visible() and tuple(c.ic.ax.get_xlim()) == (-0.5, nx - 0.5)
     assert "ChronoGate" in w.windowTitle()
     assert not w.lifetime.isEnabled(), "lifetime panel should be disabled in intensity mode"
     print("OK: window builds; intensity decay + image render.")

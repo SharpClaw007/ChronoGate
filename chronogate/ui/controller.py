@@ -773,12 +773,15 @@ class ViewerController(QObject):
         return rgb
 
     def _fit_image_axes(self, shape) -> None:
-        """Restore the axes to show the image (e.g. after leaving phasor mode)."""
+        """Match the image extent and axes to the data (``set_data`` keeps the
+        original 2x2 placeholder extent, so we must set it), so the image fills
+        the panel and mouse picking uses true pixel coordinates."""
         ny, nx = shape[:2]
+        self.im.set_extent((-0.5, nx - 0.5, ny - 0.5, -0.5))   # origin='upper'
         ax = self.ic.ax
         ax.set_aspect("equal")
         ax.set_xlim(-0.5, nx - 0.5)
-        ax.set_ylim(ny - 0.5, -0.5)   # origin='upper'
+        ax.set_ylim(ny - 0.5, -0.5)
 
     def _update_stats(self, gated, lo_ns: float, hi_ns: float) -> None:
         """Push gated-image statistics into the Stats panel (intensity mode)."""
