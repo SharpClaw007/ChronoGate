@@ -32,7 +32,24 @@ in real time.
 
 ---
 
-## What it does (v1)
+## New in v0.5
+
+- **Phasor plot** (`P`): each pixel → `(g, s)` on the universal semicircle, a
+  fit-free lifetime view drawn as a density map. Numpy-only, uncalibrated.
+- **Multi-channel combine:** single channel, **ratio A/B** (e.g. FRET), or a
+  red/green **merge** of two gated channels.
+- **Intensity-weighted (HSV) lifetime** + a **τ-distribution histogram** inset.
+- **Pin decay:** freeze a decay (📌) to compare regions; picks are single otherwise.
+- **Snappy & safe on big stacks:** a decoded-frame **cache** (revisiting a plane
+  is instant), **background-threaded decoding** with a progress bar (no UI freeze),
+  a **lock-colour-scale** toggle so z-planes are comparable, and a **manual t0**
+  override (auto = smoothed decay peak).
+- **Batch export** across a whole stack, a folder-open **probe** that skips
+  point-mode / old-style files instead of erroring on click, and **versioned
+  provenance** (chronogate/ptufile/numpy + resolved t0).
+- **pip-installable** (`pip install -e .` → a `chronogate` command) with CI.
+
+## What it does
 
 - **Loads `.ptu`** from a CLI argument, a folder, or a file dialog (defaults to
   `3_FLIM_stack_ptu/`). The **record type is read from the file**, never assumed.
@@ -141,8 +158,11 @@ cd ChronoGate
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -e .                   # installs deps + a `chronogate` command
+#   (or, without the console script:  pip install -r requirements.txt)
 ```
+
+Installed this way you can launch with just **`chronogate`** (see **Run**).
 
 All dependencies are permissively licensed (BSD / MIT / PSF / LGPL): `ptufile`,
 `numpy`, `matplotlib`, `tifffile`, and **`PySide6`** (the Qt UI). PySide6 ships
