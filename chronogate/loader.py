@@ -308,6 +308,39 @@ def load_ptu(
     )
 
 
+def probe_ptu(path: str | Path) -> str:
+    """Quickly classify a ``.ptu`` for ChronoGate without a full load.
+
+    Returns one of ``"image"`` (a decodable FLIM image), ``"point"`` (a
+    point/histogram measurement -- FCS, antibunching, an IRF), ``"old-style"``
+    (an image the decoder can't reconstruct), or ``"error"``. Header metadata is
+    cheap, but an *old-style* image only reveals itself on a decode attempt, so
+    image-typed files get a guarded single-frame decode.
+    """
+    path = Path(path)
+    try:
+        ptu = PtuFile(str(path))
+    except Exception:  # noqa: BLE001
+        return "error"
+    try:
+        dims = ptu.dims
+        d = dict(zip(dims, (int(s) for s in ptu.shape)))
+        is_image = "X" in dims and "Y" in dims and d.get("X", 0) > 1 and d.get("Y", 0) > 1
+    except Exception:  # noqa: BLE001
+        return "error"
+    finally:
+        ptu.close()
+    if not is_image:
+        return "point"
+    try:
+        load_ptu(path, channel=0, frame=0, sum_frames=False)   # old-style fails fast
+        return "image"
+    except UnsupportedFileError as exc:
+        return "old-style" if "old-style" in str(exc).lower() else "error"
+    except Exception:  # noqa: BLE001
+        return "error"
+
+
 def find_stack(path: str | Path) -> list[Path]:
     """Find sibling files that form a numbered stack (e.g. a z-series).
 

@@ -1309,18 +1309,40 @@ class ViewerController(QObject):
             self.load_folder(directory)
 
     def load_folder(self, directory) -> None:
-        """Load the .ptu stack found under ``directory`` (z-series across files)."""
+        """Load the .ptu stack under ``directory`` (z-series across files).
+
+        Probes files so it opens the first *decodable FLIM image* rather than
+        failing on a point-mode or old-style file, and reports what it skipped.
+        """
+        from ..loader import probe_ptu
         directory = Path(directory)
         ptus = sorted(directory.rglob("*.ptu"))
         if not ptus:
             self.statusMessage.emit(f"No .ptu files found under {directory.name}.")
             return
-        # find_stack (in load_path) groups the numbered siblings into the z-stack.
-        self.load_path(ptus[0])
-        if len(self.stack) > 1:
+        chosen, skipped = None, []
+        for p in ptus:
+            status = probe_ptu(p)
+            if status == "image":
+                chosen = p
+                break
+            skipped.append(status)
+        if chosen is None:
+            kinds = ", ".join(f"{skipped.count(k)} {k}" for k in sorted(set(skipped)))
             self.statusMessage.emit(
-                f"Loaded a {len(self.stack)}-plane stack from {directory.name} — "
-                f"step planes with the z-slice slider or PgUp/PgDn.")
+                f"No openable FLIM image in {directory.name} — {len(ptus)} .ptu ({kinds}).")
+            return
+        self._folder_skipped = skipped
+        self.load_path(chosen)  # find_stack groups its numbered siblings
+
+    def _folder_load_note(self) -> str:
+        skipped = getattr(self, "_folder_skipped", [])
+        note = ""
+        if len(self.stack) > 1:
+            note = f"{len(self.stack)}-plane stack — step with the z-slider / PgUp-PgDn."
+        if skipped:
+            note += f"  Skipped {len(skipped)} non-image/old-style .ptu."
+        return note
 
     def load_path(self, path, channel=None, sum_frames=None) -> None:
         """Load a .ptu file (and its numbered z-stack), building/refreshing the view.
@@ -1379,10 +1401,16 @@ class ViewerController(QObject):
             self._update_header()
             self._refresh_decay()
             self._refresh_image()
+        note = self._folder_load_note()
+        if note:
+            self.statusMessage.emit(note)
+        self._folder_skipped = []
 
 
     # --------------------------------------------------------- provenance / IO
     def _metadata(self) -> dict:
+        import ptufile
+        from .. import __version__ as chronogate_version
         c = self.model.cube
         ny, nx = self.model.intensity.shape
         return {
@@ -1390,7 +1418,11 @@ class ViewerController(QObject):
             "resolution_ns": c.resolution_ns, "period_ns": c.period_ns, "n_bins": c.n_bins,
             "n_channels": c.n_channels, "n_frames": c.n_frames, "image_shape": [ny, nx],
             "bin_size": self.model.bin_factor, "t0_bin": self.model.t0_bin, "t0_ns": self.model.t0_ns(),
+            "t0_manual": self.manual_t0_ns is not None,
             "total_photons_in_file": c.n_photons,
+            "chronogate_version": chronogate_version,
+            "ptufile_version": getattr(ptufile, "__version__", "unknown"),
+            "numpy_version": np.__version__,
         }
 
     def _settings(self) -> dict:
@@ -1445,6 +1477,43 @@ class ViewerController(QObject):
                                cmap=self.cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
                                settings=self._settings())
         return paths
+
+    def batch_export(self, out_dir=None) -> int:
+        """Apply the current gate/floor/threshold/mode to *every* plane of the
+        stack and export each (TIFF/PNG/CSV/provenance). Returns the plane count."""
+        if self.model is None or not self.stack:
+            return 0
+        out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports" / "batch"
+        n, saved_z, saved_model = len(self.stack), self.z_index, self.model
+        self._set_busy(True, f"batch export ({n} planes)")
+        try:
+            for i in range(n):
+                self.z_index = i
+                self.model = self._load_current()  # cache-aware
+                self._apply_manual_t0()
+                self.export(out_dir)
+                if self.w is not None:
+                    self.w.set_progress(i + 1, n)
+                    QApplication.processEvents()   # repaint only; controls are disabled
+        finally:
+            self.z_index, self.model = saved_z, saved_model
+            self._set_busy(False)
+        if self.w is not None:
+            self._update_header(); self._refresh_decay(); self._refresh_image()
+        self.statusMessage.emit(f"Batch: exported {n} plane(s) → {out_dir}")
+        return n
+
+    def _on_batch_export(self) -> None:
+        if self.model is None:
+            return
+        if len(self.stack) <= 1:
+            self.statusMessage.emit("Batch export needs a multi-plane stack; use Export for a single file.")
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self.w, "Choose an output folder for the batch export", self._dialog_dir(),
+            QFileDialog.Option.ShowDirsOnly | _DLG_OPT)
+        if directory:
+            self.batch_export(directory)
 
     def _on_export(self) -> None:
         paths = self.export()

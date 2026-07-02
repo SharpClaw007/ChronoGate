@@ -47,12 +47,12 @@ test and a green run of both suites.
 
 ## Wave D — IO & rigor
 
-- [ ] **10. Old-style `.ptu` labelling.** Decode-probe files up front (folder
+- [x] **10. Old-style `.ptu` labelling.** Decode-probe files up front (folder
   scan) and mark un-openable/old-style ones in the UI instead of failing on
   click.
-- [ ] **11. Batch export.** Apply the current gate/floor/threshold/mode across a
+- [x] **11. Batch export.** Apply the current gate/floor/threshold/mode across a
   whole stack and export every plane (TIFF/PNG/CSV/provenance) with progress.
-- [ ] **12. Provenance versioning.** Record `chronogate.__version__`, the
+- [x] **12. Provenance versioning.** Record `chronogate.__version__`, the
   `ptufile` version, and the resolved `t0_bin` in the provenance JSON so a run is
   actually reproducible.
 

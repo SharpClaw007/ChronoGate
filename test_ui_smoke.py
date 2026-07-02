@@ -258,6 +258,31 @@ def test_wave_c_views() -> None:
     print("OK: phasor · HSV lifetime · τ-histogram · pin decay · channel combine all render.")
 
 
+def test_probe_and_batch_export() -> None:
+    import tempfile
+    from pathlib import Path as P
+    from chronogate.loader import probe_ptu
+    files = sorted(DATA_DIR.rglob("*.ptu"))
+    assert probe_ptu(files[0]) == "image", "the example stack must probe as a FLIM image"
+    assert probe_ptu(DATA_DIR / "nope.ptu") == "error"
+    _window()  # ensure app
+    from chronogate.ui.main_window import MainWindow
+    w = MainWindow(None, open_dir=str(DATA_DIR))
+    c = w.controller
+    c.load_folder(str(DATA_DIR))
+    assert len(c.stack) > 1
+    c.stack = c.stack[:3]                    # keep the batch quick
+    out = tempfile.mkdtemp()
+    n = c.batch_export(out)
+    assert n == 3
+    tiffs = list(P(out).rglob("*_gated_raw.tif"))
+    assert len(tiffs) == 3, "batch writes one export per plane"
+    # provenance carries the version stamps + resolved t0
+    meta = json.loads(next(P(out).rglob("*_provenance.json")).read_text())["metadata"]
+    assert meta["chronogate_version"] and "t0_bin" in meta and "ptufile_version" in meta
+    print(f"OK: probe classifies files; batch exported {n} planes; provenance versioned.")
+
+
 def test_threaded_decode() -> None:
     import time
     from PySide6.QtWidgets import QApplication
@@ -321,6 +346,7 @@ if __name__ == "__main__":
         test_fit_overlay()
         test_wave_c_views()
         test_cache_lockscale_and_t0()
+        test_probe_and_batch_export()
         test_threaded_decode()
         test_floor_slider_per_pixel_and_scale()
     except AssertionError as exc:

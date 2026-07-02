@@ -172,6 +172,8 @@ class MainWindow(QMainWindow):
         self.act_open_folder = QAction("Open &folder (stack)…", self,
                                        shortcut=QKeySequence("Ctrl+Shift+O"))
         self.act_export = QAction("&Export", self, shortcut=QKeySequence("Ctrl+E"))
+        self.act_batch = QAction("Export &all planes (batch)…", self,
+                                 shortcut=QKeySequence("Ctrl+Shift+E"))
         self.act_save = QAction("&Save settings", self, shortcut=QKeySequence("Ctrl+S"))
         self.act_load = QAction("&Load settings", self, shortcut=QKeySequence("Ctrl+L"))
         self.act_quit = QAction("&Quit", self, shortcut=QKeySequence.Quit)
@@ -202,6 +204,7 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_open)
         m_file.addAction(self.act_open_folder)
         m_file.addAction(self.act_export)
+        m_file.addAction(self.act_batch)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
         m_file.addAction(self.act_load)
@@ -239,6 +242,7 @@ class MainWindow(QMainWindow):
         self.act_open.triggered.connect(self.filep.btn_open.click)
         self.act_open_folder.triggered.connect(self.filep.btn_open_folder.click)
         self.act_export.triggered.connect(self.filep.btn_export.click)
+        self.act_batch.triggered.connect(self.controller._on_batch_export)
         self.act_save.triggered.connect(self.filep.btn_save.click)
         self.act_load.triggered.connect(self.filep.btn_load.click)
         self.act_quit.triggered.connect(self.close)
@@ -285,7 +289,7 @@ class MainWindow(QMainWindow):
         actions are disabled -- only the Open actions stay live.
         """
         self._stack.setCurrentWidget(self._workspace if loaded else self._welcome)
-        for a in (self.act_export, self.act_save, self.act_load,
+        for a in (self.act_export, self.act_batch, self.act_save, self.act_load,
                   self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log, self.act_floor):
             a.setEnabled(loaded)
 
