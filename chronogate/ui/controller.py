@@ -256,10 +256,11 @@ class ViewerController(QObject):
         return self.noise_floor_pp
 
     def _floor_slider_range(self) -> tuple[int, int]:
-        """Slider bounds for the (per-pixel) noise floor: 0 up to the brightest
-        single-pixel bin, so the floor can be pushed high enough to zero even the
-        brightest pixel -- not just the average level."""
-        return 0, self.model.peak_counts_per_bin()
+        """Slider bounds for the noise floor, in summed-decay units: the lowest
+        and highest recorded values across the whole decay curve (the floor line
+        is drawn on that curve, so it can sweep it end to end)."""
+        d = self.model.decay
+        return int(d.min()), int(d.max())
 
     # --------------------------------------------------------------- artists
     def _build_artists(self) -> None:
@@ -391,7 +392,8 @@ class ViewerController(QObject):
             w.display.vmin.setEnabled(self.lock_scale)
             w.display.vmax.setEnabled(self.lock_scale)
             w.display.thr.setValue(self.threshold)
-            w.display.floor.setValue(min(self.noise_floor_pp, w.display.floor.maximum()))
+            w.display.floor.setValue(min(self.noise_floor_pp * self.model.n_pixels,
+                                         w.display.floor.maximum()))
             w.display.cmap.setCurrentText(self.cmap)
             w.lifetime.radio_a.setChecked(self.edit_target == "A")
             w.lifetime.radio_b.setChecked(self.edit_target == "B")
@@ -1141,7 +1143,8 @@ class ViewerController(QObject):
         self._refresh_image()
 
     def _on_noise_floor(self, val) -> None:
-        self.noise_floor_pp = float(val)
+        # The slider is in summed-decay units; store it per pixel for subtraction.
+        self.noise_floor_pp = float(val) / max(1, self.model.n_pixels)
         self._refresh_decay()
         self._refresh_image()
 
@@ -1193,7 +1196,8 @@ class ViewerController(QObject):
         self.noise_floor_pp = self.model.auto_noise_floor_pp()
         self._refit_ranges()
         with _blocked(self.w.display.floor):
-            self.w.display.floor.setValue(min(self.noise_floor_pp, self.w.display.floor.maximum()))
+            self.w.display.floor.setValue(min(self.noise_floor_pp * self.model.n_pixels,
+                                              self.w.display.floor.maximum()))
         self._update_header()
         self._refresh_decay()
         self._refresh_image()

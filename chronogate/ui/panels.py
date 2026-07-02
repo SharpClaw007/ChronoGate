@@ -218,10 +218,10 @@ class DisplayPanel(QGroupBox):
         super().__init__("Display")
         self.thr = SliderSpin(0, 100, 0)
         self.thr.setToolTip("Blank pixels whose total photons are below this (dim-pixel mask).")
-        self.floor = SliderSpin(0, 100, 0, suffix=" /px", decimals=3)
-        self.floor.setToolTip("Noise floor in counts/bin per pixel, subtracted from every "
-                              "pixel (× gate width). Max = the brightest pixel, so it can "
-                              "zero the image.")
+        self.floor = SliderSpin(0, 100, 0, suffix=" cts", decimals=0)
+        self.floor.setToolTip("Noise-floor level, read on the summed decay (counts/bin). "
+                              "Ranges over the whole curve (lowest→highest recorded value); "
+                              "subtracted from every pixel × gate width.")
         self.cmap = QComboBox()
         self.cmap.addItems(INTENSITY_CMAPS)
         self.cmap.setToolTip("Colormap for the gated intensity image.")

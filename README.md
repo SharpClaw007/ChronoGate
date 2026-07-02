@@ -102,11 +102,12 @@ in real time.
   line, e.g. *"median signal pixel ≈ 35 photons → 2×2 (≈140/px)."*
 - **Honest images:**
   - a **dim-pixel intensity threshold** (mask pixels whose *total* photons are low), and
-  - an adjustable **noise floor** — a per-pixel background level (counts/bin per
-    pixel), drawn as a line on the decay and subtracted (× gate width) from each
-    pixel's gated integral, clamped at 0. It **auto-generates just above the
-    pre-pulse noise band** (mean + 3σ of the pre-signal bins) and is on by
-    default; toggle **subtract floor** off for raw counts.
+  - an adjustable **noise floor** — a background level read on the summed decay
+    (counts/bin), drawn as a line on the curve and subtracted (× gate width) from
+    each pixel's gated integral, clamped at 0. It **auto-sets just above the flat
+    pre-pulse baseline** (a robust median + 3σ estimate that ignores the rising
+    edge), spans the whole decay curve (lowest→highest recorded value), and is on
+    by default; toggle **subtract floor** off for raw counts.
 - **Layer / file selection:** **Open .ptu file…** loads any file (re-detecting
   its numbered stack); for a numbered series (`..._z1.ptu` … `..._z65.ptu`) a
   **z-slice** slider steps through the planes. The current file/layer is shown
