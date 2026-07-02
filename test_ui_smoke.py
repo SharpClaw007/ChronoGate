@@ -334,7 +334,11 @@ def test_floor_slider_summed_range_and_scale() -> None:
     f.spin.setValue(f._max)
     c._on_noise_floor(f.value())
     assert abs(c.noise_floor_pp - f._max / c.model.n_pixels) < 1e-9
-    print("OK: floor slider spans the summed decay (lowest→highest); scale follows the y-axis.")
+    # the "auto" button resets to the robust-baseline value
+    w.display.btn_floor_auto.click()
+    assert abs(c.noise_floor_pp - c.model.auto_noise_floor_pp()) < 1e-9
+    assert abs(f.value() - round(c.model.auto_noise_floor_pp() * c.model.n_pixels)) <= 1
+    print("OK: floor slider spans the summed decay; scale follows the y-axis; auto button resets.")
 
 
 if __name__ == "__main__":

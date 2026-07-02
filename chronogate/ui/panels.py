@@ -222,6 +222,10 @@ class DisplayPanel(QGroupBox):
         self.floor.setToolTip("Noise-floor level, read on the summed decay (counts/bin). "
                               "Ranges over the whole curve (lowest→highest recorded value); "
                               "subtracted from every pixel × gate width.")
+        self.btn_floor_auto = QPushButton("auto")
+        self.btn_floor_auto.setMaximumWidth(52)
+        self.btn_floor_auto.setToolTip("Reset the noise floor to the auto value "
+                                       "(just above the flat pre-pulse baseline).")
         self.cmap = QComboBox()
         self.cmap.addItems(INTENSITY_CMAPS)
         self.cmap.setToolTip("Colormap for the gated intensity image.")
@@ -239,7 +243,11 @@ class DisplayPanel(QGroupBox):
             s.setToolTip("Locked colour-range limit (editable while 'lock scale' is on).")
         form = _form()
         form.addRow("min photons/px", self.thr)
-        form.addRow("noise floor", self.floor)
+        floor_row = QHBoxLayout()
+        floor_row.setSpacing(6)
+        floor_row.addWidget(self.floor, 1)
+        floor_row.addWidget(self.btn_floor_auto)
+        form.addRow("noise floor", floor_row)
         form.addRow("colormap", self.cmap)
         lockrow = QHBoxLayout()
         lockrow.setSpacing(6)

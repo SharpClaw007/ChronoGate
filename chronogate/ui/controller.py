@@ -321,6 +321,7 @@ class ViewerController(QObject):
         w.display.thr.valueChanged.connect(self._on_threshold)
         w.display.floor.valueChanged.connect(self._on_noise_floor)
         w.display.cmap.currentTextChanged.connect(self._on_cmap)
+        w.display.btn_floor_auto.clicked.connect(self._on_floor_auto)
         w.display.lock.toggled.connect(self._on_lock_scale)
         w.display.vmin.valueChanged.connect(self._on_manual_clim)
         w.display.vmax.valueChanged.connect(self._on_manual_clim)
@@ -1140,6 +1141,18 @@ class ViewerController(QObject):
     # ----------------------------------------------------- other event handlers
     def _on_threshold(self, val) -> None:
         self.threshold = int(val)
+        self._refresh_image()
+
+    def _on_floor_auto(self) -> None:
+        """Reset the noise floor to the auto (robust-baseline) value."""
+        if self.model is None:
+            return
+        self.noise_floor_pp = self.model.auto_noise_floor_pp()
+        if self.w is not None:
+            with _blocked(self.w.display.floor):
+                self.w.display.floor.setValue(min(self.noise_floor_pp * self.model.n_pixels,
+                                                  self.w.display.floor.maximum()))
+        self._refresh_decay()
         self._refresh_image()
 
     def _on_noise_floor(self, val) -> None:
