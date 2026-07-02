@@ -13,8 +13,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
-    QScrollArea, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QProgressBar,
+    QPushButton, QScrollArea, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from . import panels
@@ -116,6 +116,10 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self.header_label = QLabel("")
         self.header_label.setObjectName("Header")
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(200)
+        self.progress.setVisible(False)
+        self.statusBar().addWidget(self.progress)
         self.statusBar().addPermanentWidget(self.header_label)
 
         # --- controller: owns the model, artists and all logic ---
@@ -160,6 +164,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(container)
         scroll.setFrameShape(QFrame.NoFrame)
+        self._controls_rack = scroll
         return scroll
 
     def _build_actions(self) -> None:
@@ -213,6 +218,7 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> None:
         tb = self.addToolBar("Main")
+        self._toolbar = tb
         tb.setObjectName("MainToolbar")
         tb.setMovable(False)
         tb.addAction(self.act_open)
@@ -244,7 +250,30 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_PageUp), self, activated=lambda: c.step_z(1))
         QShortcut(QKeySequence(Qt.Key_PageDown), self, activated=lambda: c.step_z(-1))
 
+    def closeEvent(self, event) -> None:
+        self.controller.stop_decode()   # never leave a QThread running at exit
+        super().closeEvent(event)
+
     # ------------------------------------------------------------- view hooks
+    def set_busy(self, on: bool, name: str = "") -> None:
+        """Disable interaction and show the progress bar during a background
+        decode, so the window stays responsive without letting a second load
+        start on top of the first."""
+        self._controls_rack.setEnabled(not on)
+        self._toolbar.setEnabled(not on)
+        self.progress.setVisible(on)
+        if on:
+            self.progress.setRange(0, 0)   # indeterminate until the first frame
+            self.statusBar().showMessage(f"Loading {name}…")
+        else:
+            self.progress.setRange(0, 1)
+            self.progress.reset()
+            self.statusBar().clearMessage()
+
+    def set_progress(self, done: int, total: int) -> None:
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+
     def set_loaded(self, loaded: bool) -> None:
         """Switch between the welcome screen and the workspace.
 

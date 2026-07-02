@@ -21,7 +21,7 @@ test and a green run of both suites.
 
 ## Wave B — responsiveness
 
-- [ ] **4. Threaded decode + progress.** Move `load_ptu` onto a `QThread`
+- [x] **4. Threaded decode + progress.** Move `load_ptu` onto a `QThread`
   worker (object-lives-in-thread pattern, kept referenced, `quit()`+`wait()` on
   teardown) with a non-modal progress bar and a busy-guard so the UI stays alive
   on big multi-frame files. **Decision:** safe now that the launcher runs native

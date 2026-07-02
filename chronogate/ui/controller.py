@@ -28,13 +28,38 @@ import matplotlib
 from matplotlib.widgets import SpanSelector
 from matplotlib.patches import Rectangle
 
-from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker
+from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker, QThread
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from .. import gating
 from ..loader import find_stack, load_ptu, FrameCache
 from ..export import export_all, load_settings, save_settings
 from . import theme
+
+
+class _DecodeWorker(QObject):
+    """Runs a (possibly slow) ``load_ptu`` on a background QThread.
+
+    Lives in the worker thread (``moveToThread``); emits ``progress`` per frame
+    and ``done``/``failed`` back to the controller (a main-thread QObject, so the
+    connections are queued and the continuation runs on the GUI thread).
+    """
+
+    progress = Signal(int, int)
+    done = Signal(object)     # FlimCube
+    failed = Signal(str)
+
+    def __init__(self, path, channel: int, sum_frames: bool):
+        super().__init__()
+        self._path, self._channel, self._sum = path, channel, sum_frames
+
+    def run(self) -> None:
+        try:
+            cube = load_ptu(self._path, channel=self._channel, sum_frames=self._sum,
+                            progress=lambda d, t: self.progress.emit(int(d), int(t)))
+            self.done.emit(cube)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user cleanly
+            self.failed.emit(str(exc))
 
 # Use Qt's own file dialog rather than the macOS native panel: the native
 # NSOpenPanel is a known crash source with PySide6 (worse under Rosetta).
@@ -79,6 +104,14 @@ class ViewerController(QObject):
         self.channel = channel
         self.sum_frames = sum_frames
         self._cube_cache = FrameCache()  # decoded cubes, so z/channel revisits are instant
+        self._decode_thread = None       # background decode (QThread) state
+        self._decode_worker = None
+        self._decode_cont = None
+        self._decode_key = None
+        self._busy = False
+        # Threaded decode needs a running event loop to deliver the result; the
+        # launched app turns this on, tests/headless keep it synchronous.
+        self.async_decode = False
 
         # Analysis state (the authoritative values; widgets render these).
         self.lock_scale = False           # freeze the colour range across frames
@@ -116,6 +149,89 @@ class ViewerController(QObject):
         self.gateB_hi_bin = 0
 
         self._build_artists()
+
+    # ------------------------------------------------------- async decode
+    def _decode_async(self, path, channel, sum_frames, cont) -> None:
+        """Get the decoded cube for (path, channel, sum_frames), then call
+        ``cont(cube, error)`` on the main thread. Cache hits are synchronous;
+        misses decode on a background QThread with a live progress bar, so the
+        UI never freezes. Overlapping decodes are refused (busy guard)."""
+        key = (str(path), channel, sum_frames)
+        cube = self._cube_cache.get(key)
+        if cube is not None:
+            cont(cube, None)
+            return
+        if not self.async_decode:      # synchronous (no running event loop)
+            try:
+                cube = load_ptu(path, channel=channel, sum_frames=sum_frames)
+                print(cube.summary())
+                self._cube_cache.put(key, cube)
+            except Exception as exc:   # noqa: BLE001
+                cont(None, str(exc))
+                return
+            cont(cube, None)
+            return
+        if self._decode_thread is not None:
+            self.statusMessage.emit("Still loading a file — please wait…")
+            return
+        self._decode_key, self._decode_cont = key, cont
+        self._set_busy(True, Path(path).name)
+        self._decode_thread = QThread()
+        self._decode_worker = _DecodeWorker(path, channel, sum_frames)
+        self._decode_worker.moveToThread(self._decode_thread)
+        self._decode_thread.started.connect(self._decode_worker.run)
+        self._decode_worker.progress.connect(self._on_decode_progress)
+        self._decode_worker.done.connect(self._on_decode_done)
+        self._decode_worker.failed.connect(self._on_decode_failed)
+        self._decode_thread.start()
+
+    def _on_decode_progress(self, done: int, total: int) -> None:
+        if self.w is not None and total > 1:
+            self.w.set_progress(done, total)
+
+    def _on_decode_done(self, cube) -> None:
+        self._cube_cache.put(self._decode_key, cube)
+        print(cube.summary())
+        cont = self._decode_cont
+        self._teardown_decode()
+        if cont is not None:
+            cont(cube, None)
+
+    def _on_decode_failed(self, msg: str) -> None:
+        cont = self._decode_cont
+        self._teardown_decode()
+        if cont is not None:
+            cont(None, msg)
+
+    def stop_decode(self) -> None:
+        """Join any running decode thread (called on window close) so a QThread is
+        never destroyed while still running -- the exact SIGABRT we've hit before."""
+        th, wk = self._decode_thread, self._decode_worker
+        self._decode_thread = self._decode_worker = None
+        self._decode_cont = self._decode_key = None
+        if th is not None:
+            th.quit()
+            th.wait()
+            if wk is not None:
+                wk.deleteLater()
+            th.deleteLater()
+
+    def _teardown_decode(self) -> None:
+        self._set_busy(False)
+        th, wk = self._decode_thread, self._decode_worker
+        self._decode_thread = self._decode_worker = None
+        self._decode_cont = self._decode_key = None
+        if th is not None:
+            th.quit()
+            th.wait()
+            wk.deleteLater()
+            th.deleteLater()
+
+    def _set_busy(self, on: bool, name: str = "") -> None:
+        self._busy = on
+        if self.w is None:
+            return
+        self.w.set_busy(on, name)
 
     # ----------------------------------------------------------------- loading
     def _load_current(self, progress=None) -> gating.GatingModel:
@@ -922,20 +1038,32 @@ class ViewerController(QObject):
         if idx < 0:
             return
         self.channel = int(idx)
-        self._reload_model_busy()
-        self._update_header()
-        self._refresh_decay()
-        self._refresh_image()
+        self._reload_async()
 
     def _on_zslice(self, val) -> None:
         self.z_index = int(val)
-        self._reload_model_busy()
+        self._reload_async()
+
+    def _reload_async(self) -> None:
+        """Swap the model for the current (z, channel); a cache miss decodes in
+        the background (progress bar), applied via :meth:`_after_reload`."""
+        self._decode_async(self.stack[self.z_index], self.channel, self.sum_frames,
+                           self._after_reload)
+
+    def _after_reload(self, cube, err) -> None:
+        if err is not None:
+            self.statusMessage.emit(f"Could not load: {err}")
+            return
+        self.model = gating.GatingModel(cube, bin_factor=self.bin_size)
+        self._apply_manual_t0()
         self._refit_ranges()
         self._update_header()
         self._refresh_decay()
         self._refresh_image()
 
     def _reload_model_busy(self) -> None:
+        """Synchronous reload (used by settings-apply); cache-aware, so it only
+        blocks on a genuine first-time decode."""
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.model = self._load_current()
@@ -989,38 +1117,43 @@ class ViewerController(QObject):
             self.channel = channel
         if sum_frames is not None:
             self.sum_frames = sum_frames
-
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.stack = find_stack(path)
             self.z_index = next((i for i, p in enumerate(self.stack) if p == path), 0)
-            try:
-                model = self._load_current()
-            except Exception:
-                self.channel = 0  # the new file may have fewer detector channels
-                model = self._load_current()
-        except Exception as exc:  # noqa: BLE001 - report cleanly, keep current view
-            QApplication.restoreOverrideCursor()
-            self.statusMessage.emit(f"Could not load {path.name}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            self.statusMessage.emit(f"Could not open {path.name}: {exc}")
             return
-        QApplication.restoreOverrideCursor()
+        self._decode_async(self.stack[self.z_index], self.channel, self.sum_frames,
+                           self._after_initial_load)
+
+    def _after_initial_load(self, cube, err) -> None:
+        if err is not None:
+            if self.channel != 0:   # the new file may have fewer detector channels
+                self.channel = 0
+                self._decode_async(self.stack[self.z_index], 0, self.sum_frames,
+                                   self._after_initial_load)
+                return
+            self.statusMessage.emit(f"Could not load: {err}")
+            return
 
         first = self.model is None
-        self.model = model
+        self.model = gating.GatingModel(cube, bin_factor=self.bin_size)
+        self._apply_manual_t0()
         self.picks = []
         self.threshold = 0
-        self.noise_floor_pp = model.auto_noise_floor_pp()
+        self.noise_floor_pp = self.model.auto_noise_floor_pp()
+        n = self.model.n_bins
         if first:
-            self.gate_lo_bin = model.t0_bin
-            self.gate_hi_bin = model.n_bins - 1
+            self.gate_lo_bin = self.model.t0_bin
+            self.gate_hi_bin = n - 1
             self.gateB_lo_bin = self.gate_lo_bin
             self.gateB_hi_bin = self.gate_hi_bin
             self._lifetime_init = False
         else:
-            self.gate_lo_bin = min(self.gate_lo_bin, model.n_bins - 1)
-            self.gate_hi_bin = min(self.gate_hi_bin, model.n_bins - 1)
-            self.gateB_lo_bin = min(self.gateB_lo_bin, model.n_bins - 1)
-            self.gateB_hi_bin = min(self.gateB_hi_bin, model.n_bins - 1)
+            self.gate_lo_bin = min(self.gate_lo_bin, n - 1)
+            self.gate_hi_bin = min(self.gate_hi_bin, n - 1)
+            self.gateB_lo_bin = min(self.gateB_lo_bin, n - 1)
+            self.gateB_hi_bin = min(self.gateB_hi_bin, n - 1)
 
         if self.w is not None:
             self.w.set_loaded(True)

@@ -230,6 +230,27 @@ def test_cache_lockscale_and_t0() -> None:
     print("OK: frame cache hits, lock-scale freezes clim, manual t0 persists & resets.")
 
 
+def test_threaded_decode() -> None:
+    import time
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    _window()  # ensure app
+    from chronogate.ui.main_window import MainWindow
+    w = MainWindow(None, open_dir=str(DATA_DIR))
+    c = w.controller
+    c.load_folder(str(DATA_DIR))       # synchronous initial load
+    c.async_decode = True              # subsequent decodes go on a QThread
+    z0 = c.z_index
+    c.step_z(2)                        # uncached plane -> background decode
+    t0 = time.monotonic()
+    while c._decode_thread is not None and time.monotonic() - t0 < 30:
+        app.processEvents()
+    assert c.z_index == z0 + 2 and c.model is not None, "threaded decode must deliver the model"
+    assert c._decode_thread is None, "the decode thread must be torn down"
+    c.stop_decode()                    # idempotent when idle (close-time join)
+    print("OK: background (QThread) decode delivers the model and joins cleanly.")
+
+
 def test_floor_slider_per_pixel_and_scale() -> None:
     import math
     w = _window()
@@ -271,6 +292,7 @@ if __name__ == "__main__":
         test_picks_and_keyboard_helpers()
         test_fit_overlay()
         test_cache_lockscale_and_t0()
+        test_threaded_decode()
         test_floor_slider_per_pixel_and_scale()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

@@ -75,5 +75,8 @@ def launch(path=None, channel: int = 0, sum_frames: bool = True,
         win.controller.apply_settings(load_settings(settings_path))
     if start_lifetime:
         win.controller.enter_lifetime()
+    # The event loop is about to run, so subsequent opens/z-steps can decode on a
+    # background thread (kept synchronous during startup above).
+    win.controller.async_decode = True
     win.show()
     return app.exec()
