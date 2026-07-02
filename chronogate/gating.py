@@ -379,21 +379,25 @@ class GatingModel:
         return float(self.bg_per_bin.sum())
 
     def auto_noise_floor_pp(self) -> float:
-        """Auto per-pixel floor placed just **above the pre-pulse noise band**.
+        """Auto per-pixel floor placed just **above the flat pre-pulse baseline**.
 
-        The bins before the pulse (``[0, t0-guard]``) hold only the baseline noise
-        of the first, pre-signal photons. We take the summed pre-pulse decay's
-        ``mean + 3*std`` -- the top of that noise band, so ~all noise bins fall
-        below it -- and divide by the pixel count to get the per-pixel floor
-        :meth:`gate` subtracts. Falls back gracefully when there are too few
-        pre-pulse bins to estimate a spread.
+        The bins before the pulse hold only the baseline noise of the first,
+        pre-signal photons. We estimate that baseline **robustly**: the *median*
+        of the summed pre-pulse decay (which ignores the rising-edge bin(s) that
+        creep into the window near ``t0``, where a plain mean+std would be dragged
+        far too high), plus ``3`` robust sigma (``1.4826*MAD``, floored at the
+        Poisson ``sqrt(median)``). Divided by the pixel count, this sits right
+        above the baseline without eating into the signal.
         """
         hi = max(0, self.t0_bin - 3)
         pre = self.decay[:hi].astype(np.float64)
-        if pre.size >= 2:
-            level = float(pre.mean() + 3.0 * pre.std())
-        elif pre.size == 1:
-            level = float(pre[0])
+        if pre.size >= 3:
+            med = float(np.median(pre))
+            mad = float(np.median(np.abs(pre - med)))
+            sigma = max(1.4826 * mad, np.sqrt(max(med, 0.0)))
+            level = med + 3.0 * sigma
+        elif pre.size:
+            level = float(np.median(pre))
         else:
             level = float(self.bg_per_bin.sum())
         return level / max(1, self.n_pixels)

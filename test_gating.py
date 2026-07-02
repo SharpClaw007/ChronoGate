@@ -218,6 +218,28 @@ def test_gate_integral_numeric_truth():
     print("OK: per-pixel gated integral + floor subtraction are numerically exact.")
 
 
+def test_auto_floor_robust_to_rising_edge():
+    """The auto noise floor must sit just above the flat baseline, not be dragged
+    up by a rising-edge bin that lands inside the pre-pulse window."""
+    ny, nx, n = 40, 40, 200
+    prof = np.ones(n)                     # flat baseline of 1 count/bin/pixel
+    prof[20:25] = [2, 5, 12, 25, 40]      # sharp rise
+    prof[25:] = 40 * np.exp(-(np.arange(n - 25)) / 25.0)  # decay, peak at bin 25
+    counts = np.round(np.broadcast_to(prof, (ny, nx, n))).astype(np.uint16).copy()
+    cube = FlimCube(counts=counts, resolution_ns=0.05, period_ns=n * 0.05, n_bins=n,
+                    record_type="synthetic", channel=0, n_channels=1,
+                    frame_mode="single frame", n_frames=1, n_photons=int(counts.sum()),
+                    path=Path("synthetic.ptu"))
+    m = gating.GatingModel(cube)
+    npix = m.n_pixels
+    floor_total = m.auto_noise_floor_pp() * npix
+    baseline_total = 1 * npix              # baseline summed over pixels
+    # just above baseline (Poisson margin), NOT pulled toward the ~40x rise
+    assert baseline_total <= floor_total < 4 * baseline_total, (floor_total, baseline_total)
+    print(f"OK: auto floor {floor_total:.0f} sits just above baseline {baseline_total} "
+          f"(robust to a rising-edge bin in the window).")
+
+
 def test_phasor_mono_exponential_on_semicircle():
     """A mono-exponential decay's phasor must land on the universal semicircle."""
     n, period_bins, tau_bins = 256, 256.0, 40.0
@@ -245,6 +267,7 @@ if __name__ == "__main__":
         test_rld_recovers_known_lifetime()
         test_mono_exponential_fit_recovers_tau()
         test_gate_integral_numeric_truth()
+        test_auto_floor_robust_to_rising_edge()
         test_phasor_mono_exponential_on_semicircle()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
