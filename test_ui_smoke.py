@@ -230,6 +230,34 @@ def test_cache_lockscale_and_t0() -> None:
     print("OK: frame cache hits, lock-scale freezes clim, manual t0 persists & resets.")
 
 
+def test_wave_c_views() -> None:
+    w = _window()
+    c = w.controller
+    # phasor mode: renders (hexbin + semicircle) and disables picks
+    c._enter_mode("phasor")
+    assert c.mode == "phasor" and len(c._phasor_artists) >= 1
+    c._on_image_press(_FakeEvent(c.ic.ax, 100, 100, 50.0, 50.0))
+    assert c._press_xy is None, "picks must be disabled in phasor mode"
+    # lifetime: HSV toggle + tau histogram inset (pool photons so tau resolves)
+    w.binning.bin.setValue(8)
+    c._enter_mode("lifetime"); c.hsv_lifetime = True; c._refresh_image()
+    assert c._tau_hist_ax is not None, "tau histogram inset should be drawn"
+    c._enter_mode("intensity")
+    assert c._tau_hist_ax is None and c.im.get_visible(), "image restored after phasor/hist"
+    # pin decay: pin one, click another -> two decays shown
+    r, col = np.unravel_index(int(c.model.intensity.argmax()), c.model.intensity.shape)
+    c._add_pixel(int(r), int(col)); c._on_pin()
+    assert len(c.pinned_picks) == 1 and len(c.picks) == 0
+    c._add_pixel(int(r) + 8, int(col) + 8)
+    assert len(c._shown_picks()) == 2, "pinned + live decays overlaid"
+    c._clear_picks(); assert not c._shown_picks()
+    # channel combine (the example file has 2 channels)
+    if c.model.cube.n_channels >= 2:
+        for mode in ("ratio A/B", "merge RGB", "single"):
+            c.combine = mode; c._refresh_image()
+    print("OK: phasor · HSV lifetime · τ-histogram · pin decay · channel combine all render.")
+
+
 def test_threaded_decode() -> None:
     import time
     from PySide6.QtWidgets import QApplication
@@ -291,6 +319,7 @@ if __name__ == "__main__":
         test_lifetime_export_and_settings_roundtrip()
         test_picks_and_keyboard_helpers()
         test_fit_overlay()
+        test_wave_c_views()
         test_cache_lockscale_and_t0()
         test_threaded_decode()
         test_floor_slider_per_pixel_and_scale()

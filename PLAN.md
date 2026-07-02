@@ -30,19 +30,19 @@ test and a green run of both suites.
 
 ## Wave C — FLIM features
 
-- [ ] **5. Phasor plot.** Per-pixel `(g, s)` from the DFT of each decay at the
+- [x] **5. Phasor plot.** Per-pixel `(g, s)` from the DFT of each decay at the
   laser rep-rate (from the header period); a phasor scatter view with the
   universal semicircle. New **Phasor** view mode alongside Intensity/Lifetime.
   Pure cosine/sine transform of the existing cube (numpy-only).
-- [ ] **6. Multi-channel.** Files carry 2–3 channels; add a channel-combine
+- [x] **6. Multi-channel.** Files carry 2–3 channels; add a channel-combine
   control: single channel, **ratio** (chA/chB), or **merged** false-colour, so
   FRET donor/acceptor data is usable.
-- [ ] **7. Intensity-weighted lifetime (HSV).** Standard FLIM display: hue = τ,
+- [x] **7. Intensity-weighted lifetime (HSV).** Standard FLIM display: hue = τ,
   value = photon count, so dim pixels don't shout false lifetimes. A toggle in
   lifetime mode.
-- [ ] **8. τ histogram.** Histogram of the lifetime map (and gated-intensity),
+- [x] **8. τ histogram.** Histogram of the lifetime map (and gated-intensity),
   drawn under/near the image, with click-drag to restrict the displayed τ range.
-- [ ] **9. Pin decay.** Single-pick replaced comparison; add a **Pin** so one
+- [x] **9. Pin decay.** Single-pick replaced comparison; add a **Pin** so one
   decay can be frozen while probing others (pinned + live overlaid).
 
 ## Wave D — IO & rigor

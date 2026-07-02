@@ -132,8 +132,10 @@ class ViewerController(QObject):
         self.lifetime_cmap = "turbo"
         self.rld_min_counts = 10.0
         self.hsv_lifetime = False   # intensity-weight the lifetime image
+        self.combine = "single"     # "single" | "ratio A/B" | "merge RGB" (intensity mode)
         self._lifetime_init = False
-        self.picks: list[dict] = []
+        self.picks: list[dict] = []       # the live (replaced-on-click) pick
+        self.pinned_picks: list[dict] = []  # frozen picks kept for comparison
         self._pick_lines: list = []
         self._gate_fills: list = []
         self._gate_bands: list = []
@@ -262,6 +264,7 @@ class ViewerController(QObject):
     # --------------------------------------------------------------- artists
     def _build_artists(self) -> None:
         self._phasor_artists = []
+        self._tau_hist_ax = None
         ax = self.dc.ax
         (self.decay_line,) = ax.plot([], [], color=theme.ACCENT, drawstyle="steps-post",
                                      lw=1.4, label="_nolegend_")
@@ -326,10 +329,12 @@ class ViewerController(QObject):
         w.lifetime.min_cts.valueChanged.connect(self._on_min_counts)
         w.lifetime.cmap_life.currentTextChanged.connect(self._on_lifetime_cmap)
         w.lifetime.hsv.toggled.connect(self._on_hsv_lifetime)
+        w.filep.combine.currentTextChanged.connect(self._on_combine)
         w.picks.avg.valueChanged.connect(self._on_box_size)
         w.picks.smooth.valueChanged.connect(self._on_smooth)
         w.picks.fit.toggled.connect(self._on_fit_curve)
         w.picks.btn_clear.clicked.connect(self._clear_picks)
+        w.picks.btn_pin.clicked.connect(self._on_pin)
         w.binning.bin.valueChanged.connect(self._on_bin_size)
         w.binning.target.valueChanged.connect(self._on_bin_target)
         w.binning.btn_auto.clicked.connect(self._on_auto_bin)
@@ -365,6 +370,7 @@ class ViewerController(QObject):
             w.filep.channel.addItems([str(c) for c in range(self.model.cube.n_channels)])
             w.filep.channel.setCurrentIndex(self.channel)
         w.filep.channel.setEnabled(self.model.cube.n_channels > 1)
+        w.filep.combine.setEnabled(self.model.cube.n_channels > 1)
 
     def sync_widgets_from_state(self) -> None:
         """Push the authoritative state into every widget (signals blocked)."""
@@ -374,7 +380,8 @@ class ViewerController(QObject):
         widgets = [w.gate.spin_lo, w.gate.spin_hi, w.gate.t0, w.display.thr, w.display.floor,
                    w.display.cmap, w.lifetime.radio_a, w.lifetime.radio_b,
                    w.lifetime.min_cts, w.lifetime.cmap_life, w.picks.avg, w.picks.smooth, w.picks.fit,
-                   w.binning.bin, w.binning.target, w.filep.z, w.filep.channel, w.lifetime.hsv,
+                   w.binning.bin, w.binning.target, w.filep.z, w.filep.channel, w.filep.combine,
+                   w.lifetime.hsv,
                    w.act_intensity, w.act_lifetime, w.act_phasor, w.act_log, w.act_floor, w.display.lock]
         with _blocked(*widgets):
             w.gate.spin_lo.setValue(lo_ns)
@@ -398,6 +405,7 @@ class ViewerController(QObject):
             w.binning.target.setValue(self.bin_target)
             w.filep.z.setValue(min(self.z_index, w.filep.z.maximum()))
             w.filep.channel.setCurrentIndex(self.channel)
+            w.filep.combine.setCurrentText(self.combine)
             w.act_intensity.setChecked(self.mode == "intensity")
             w.act_lifetime.setChecked(self.mode == "lifetime")
             w.act_phasor.setChecked(self.mode == "phasor")
@@ -456,7 +464,7 @@ class ViewerController(QObject):
             in_gate = (x >= lo_ns) & (x < hi_ns)
             if self.mode == "lifetime" and which != self.edit_target:
                 self._gate_bands.append(ax.axvspan(lo_ns, hi_ns, color=color, alpha=0.10, lw=0))
-            if self.picks:
+            if self._shown_picks():
                 lower = self._floor_per_pixel() if floor_on else 0.0
                 for ln in self._pick_lines:
                     y = np.asarray(ln.get_ydata(), dtype=float)
@@ -484,7 +492,10 @@ class ViewerController(QObject):
         floor_pp = (self._floor_per_pixel()
                     if (self.apply_floor and self.noise_floor_pp > 0) else 0.0)
         list_items = []
-        for i, pick in enumerate(self.picks):
+        shown_picks = self._shown_picks()
+        n_pinned = len(self.pinned_picks)
+        for i, pick in enumerate(shown_picks):
+            pinned = i < n_pinned
             if pick["kind"] == "pixel":
                 r, c, b = pick["r"], pick["c"], max(1, self.box_size)
                 half = b // 2
@@ -494,6 +505,8 @@ class ViewerController(QObject):
             else:
                 r0, r1, c0, c1 = pick["r0"], pick["r1"], pick["c0"], pick["c1"]
                 tag = f"roi[{r0}:{r1},{c0}:{c1}]"
+            if pinned:
+                tag = "📌 " + tag
             raw = self.model.pixel_decay(r0, r1, c0, c1)
             shown = self._smooth(raw, self.smooth_bins)
             seg = raw[self.gate_lo_bin: self.gate_hi_bin + 1] - floor_pp
@@ -531,7 +544,7 @@ class ViewerController(QObject):
         self.t0_line.set_xdata([self.model.t0_ns(), self.model.t0_ns()])
         ax.set_xlim(0, x[-1] + res)
 
-        picks_mode = bool(self.picks)
+        picks_mode = bool(self._shown_picks())
         self.decay_line.set_visible(not picks_mode)
         self._redraw_pick_lines()
 
@@ -651,6 +664,7 @@ class ViewerController(QObject):
 
     def _refresh_phasor_image(self) -> None:
         ax = self.ic.ax
+        self._remove_tau_hist()
         self._set_phasor_axes(True)
         g, s = self.model.phasor()
         keep = np.isfinite(g) & np.isfinite(s)
@@ -681,6 +695,7 @@ class ViewerController(QObject):
 
     def _refresh_intensity_image(self) -> None:
         self._set_phasor_axes(False)
+        self._remove_tau_hist()
         res = self.model.resolution_ns
         # Per pixel: integrate that pixel's decay over the gate, minus the floor.
         floor = self._floor_per_pixel() if self.apply_floor else 0.0
@@ -692,18 +707,70 @@ class ViewerController(QObject):
         title = (f"gate {lo_ns:.2f}–{hi_ns:.2f} ns  (t0{lo_ns - t0:+.1f}…{hi_ns - t0:+.1f})\n"
                  f"{in_gate:,} {unit} in gate")
 
-        display = gated.astype(float)
-        if self.threshold > 0:
-            display[self.model.intensity < self.threshold] = np.nan
-        vmin, vmax = self._clim_for("intensity", display[np.isfinite(display)], 1, 99)
-        self.im.set_cmap(self._image_cmap("intensity"))
-        self.im.set_data(display)
-        self.im.set_clim(vmin, vmax)
-        self._fit_image_axes(display.shape)
-        self.cbar.set_label("photons in gate")
+        combine = self.combine if self.model.cube.n_channels >= 2 else "single"
+        mask = (self.model.intensity >= self.threshold) if self.threshold > 0 else None
+
+        if combine == "single":
+            display = gated.astype(float)
+            if mask is not None:
+                display[~mask] = np.nan
+            vmin, vmax = self._clim_for("intensity", display[np.isfinite(display)], 1, 99)
+            self.im.set_cmap(self._image_cmap("intensity"))
+            self.im.set_data(display)
+            self.im.set_clim(vmin, vmax)
+            self.cbar.set_label("photons in gate")
+        else:
+            other = (self.channel + 1) % self.model.cube.n_channels
+            gb = self._gated_channel(other)
+            if combine.startswith("ratio"):
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    display = gated.astype(float) / gb
+                display[(gb <= 0)] = np.nan
+                if mask is not None:
+                    display[~mask] = np.nan
+                vmin, vmax = self._clim_for("intensity", display[np.isfinite(display)], 2, 98)
+                self.im.set_cmap(self._image_cmap("intensity"))
+                self.im.set_data(display)
+                self.im.set_clim(vmin, vmax)
+                self.cbar.set_label(f"ratio ch{self.channel}/ch{other}")
+                title += f"  ·  ratio ch{self.channel}/ch{other}"
+            else:  # merge RGB
+                rgb = self._merge_rgb(gated, gb, mask)
+                self.im.set_data(rgb)
+                self.cbar.set_label(f"merge R=ch{self.channel} G=ch{other}")
+                title += f"  ·  merge R=ch{self.channel} G=ch{other}"
+            display = gated.astype(float)
+
+        self._fit_image_axes(gated.shape)
         self.ic.ax.set_title(title, fontsize=9)
         self.ic.draw_idle()
         self._update_stats(gated, lo_ns, hi_ns)
+
+    def _gated_channel(self, ch: int) -> np.ndarray:
+        """Gated image for another channel of the current plane (cache-aware)."""
+        key = (str(self.stack[self.z_index]), ch, self.sum_frames)
+        cube = self._cube_cache.get(key)
+        if cube is None:
+            cube = load_ptu(self.stack[self.z_index], channel=ch, sum_frames=self.sum_frames)
+            self._cube_cache.put(key, cube)
+        m = gating.GatingModel(cube, bin_factor=self.bin_size)
+        floor = self._floor_per_pixel() if self.apply_floor else 0.0
+        return m.gate(self.gate_lo_bin, self.gate_hi_bin, floor_per_bin=floor)
+
+    @staticmethod
+    def _norm01(a):
+        a = np.asarray(a, dtype=np.float64)
+        pos = a[a > 0]
+        hi = float(np.percentile(pos, 99)) if pos.size else 1.0
+        return np.clip(a / max(hi, 1e-9), 0.0, 1.0)
+
+    def _merge_rgb(self, ga, gb, mask):
+        rgb = np.zeros(ga.shape + (3,), dtype=np.float64)
+        rgb[..., 0] = self._norm01(ga)   # channel A -> red
+        rgb[..., 1] = self._norm01(gb)   # channel B -> green
+        if mask is not None:
+            rgb[~mask] = 0.0
+        return rgb
 
     def _fit_image_axes(self, shape) -> None:
         """Restore the axes to show the image (e.g. after leaving phasor mode)."""
@@ -731,6 +798,34 @@ class ViewerController(QObject):
             "Per-px": (f"mean {signal.mean():.1f} · med {np.median(signal):.0f} · max {int(signal.max()):,}"
                        if npix else "—"),
         })
+
+    def _remove_tau_hist(self) -> None:
+        if self._tau_hist_ax is not None:
+            try:
+                self._tau_hist_ax.remove()
+            except Exception:  # noqa: BLE001
+                pass
+            self._tau_hist_ax = None
+
+    def _draw_tau_hist(self, finite, vmin, vmax) -> None:
+        """A small τ-distribution histogram inset on the lifetime image, coloured
+        by the τ colormap. The lock min/max restricts the shown range."""
+        self._remove_tau_hist()
+        if finite.size < 2 or vmax <= vmin:
+            return
+        from matplotlib.colors import Normalize
+        ax = self.ic.ax.inset_axes([0.60, 0.70, 0.38, 0.28])
+        counts, edges = np.histogram(finite, bins=40, range=(vmin, vmax))
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        colors = matplotlib.colormaps[self.lifetime_cmap](Normalize(vmin, vmax)(centers))
+        ax.bar(centers, counts, width=edges[1] - edges[0], color=colors, edgecolor="none")
+        ax.patch.set_alpha(0.55)
+        ax.set_yticks([])
+        ax.tick_params(labelsize=6, length=2)
+        ax.set_title("τ (ns)", fontsize=6)
+        for spine in ("top", "right", "left"):
+            ax.spines[spine].set_visible(False)
+        self._tau_hist_ax = ax
 
     def _lifetime_rgb(self, tau, vmin, vmax):
         """Intensity-weighted lifetime image: hue from τ (the lifetime colormap),
@@ -771,6 +866,7 @@ class ViewerController(QObject):
         else:
             self.im.set_data(tau)
         self._fit_image_axes(tau.shape)
+        self._draw_tau_hist(finite, vmin, vmax)
         self.cbar.set_label("apparent lifetime (ns)")
 
         res = self.model.resolution_ns
@@ -807,7 +903,7 @@ class ViewerController(QObject):
     def _on_gate(self, xmin: float, xmax: float) -> None:
         self._apply_gate(xmin, xmax)
         self._sync_gate_textboxes()
-        if self.picks:
+        if self._shown_picks():
             self._refresh_decay()
 
     def _on_gate_text(self) -> None:
@@ -902,6 +998,11 @@ class ViewerController(QObject):
     def _on_hsv_lifetime(self, checked) -> None:
         self.hsv_lifetime = bool(checked)
         if self.mode == "lifetime":
+            self._refresh_image()
+
+    def _on_combine(self, text) -> None:
+        self.combine = text
+        if self.mode == "intensity":
             self._refresh_image()
 
     def _on_lifetime_cmap(self, name) -> None:
@@ -1004,14 +1105,30 @@ class ViewerController(QObject):
         self._add_pick({"kind": "pixel", "r": r, "c": c, "label": f"px({r},{c})"})
 
     def _add_pick(self, pick: dict) -> None:
-        # A new pick *replaces* the current one (single decay at a time), rather
-        # than accumulating a cumulative overlay.
+        # A new pick *replaces* the live one (single decay at a time). Pinned
+        # picks (via Pin) stay overlaid for comparison.
         self.picks = [pick]
         self._refresh_decay()
         self.statusMessage.emit(f"Showing decay for {pick['label']}.")
 
+    def _shown_picks(self) -> list:
+        """Pinned picks plus the live one, in draw order."""
+        return self.pinned_picks + self.picks
+
+    def _on_pin(self) -> None:
+        """Freeze the live decay so the next click can be compared against it."""
+        if not self.picks:
+            self.statusMessage.emit("Click a pixel/region first, then Pin it.")
+            return
+        if len(self.pinned_picks) < len(_PICK_COLORS) - 1:
+            self.pinned_picks.append(self.picks[0])
+            self.picks = []
+        self._refresh_decay()
+        self.statusMessage.emit(f"Pinned {len(self.pinned_picks)} decay(s); click another to compare.")
+
     def _clear_picks(self) -> None:
         self.picks = []
+        self.pinned_picks = []
         self._refresh_decay()
         self.statusMessage.emit("Picks cleared; showing total decay.")
 
@@ -1032,17 +1149,17 @@ class ViewerController(QObject):
 
     def _on_box_size(self, val) -> None:
         self.box_size = max(1, int(val))
-        if self.picks:
+        if self._shown_picks():
             self._refresh_decay()
 
     def _on_smooth(self, val) -> None:
         self.smooth_bins = max(1, int(val))
-        if self.picks:
+        if self._shown_picks():
             self._refresh_decay()
 
     def _on_fit_curve(self, checked) -> None:
         self.fit_curve = bool(checked)
-        if self.picks:
+        if self._shown_picks():
             self._refresh_decay()
 
     def _on_bin_size(self, val) -> None:
@@ -1239,6 +1356,7 @@ class ViewerController(QObject):
         self.model = gating.GatingModel(cube, bin_factor=self.bin_size)
         self._apply_manual_t0()
         self.picks = []
+        self.pinned_picks = []
         self.threshold = 0
         self.noise_floor_pp = self.model.auto_noise_floor_pp()
         n = self.model.n_bins
@@ -1292,7 +1410,7 @@ class ViewerController(QObject):
             "gateB_lo_bin": self.gateB_lo_bin, "gateB_hi_bin": self.gateB_hi_bin,
             "gateB_lo_ns": round(blo_ns, 4), "gateB_hi_ns": round(bhi_ns, 4),
             "lifetime_cmap": self.lifetime_cmap, "rld_min_counts": self.rld_min_counts,
-            "hsv_lifetime": self.hsv_lifetime,
+            "hsv_lifetime": self.hsv_lifetime, "combine": self.combine,
         }
 
     def _current_image_for_export(self):
@@ -1401,6 +1519,7 @@ class ViewerController(QObject):
         self.lifetime_cmap = s.get("lifetime_cmap", self.lifetime_cmap)
         self.rld_min_counts = float(s.get("rld_min_counts", self.rld_min_counts))
         self.hsv_lifetime = bool(s.get("hsv_lifetime", self.hsv_lifetime))
+        self.combine = s.get("combine", self.combine)
         mode = "lifetime" if s.get("mode", self.mode) == "lifetime" else "intensity"
         self.edit_target = "B" if (mode == "lifetime" and s.get("edit_target") == "B") else "A"
 
