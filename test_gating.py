@@ -193,6 +193,31 @@ def test_mono_exponential_fit_recovers_tau():
     print(f"OK: mono-exp fit recovers tau ~ {tau:.2f} ns from noisy low counts.")
 
 
+def test_gate_integral_numeric_truth():
+    """The per-pixel gated integral and floor subtraction must be exact."""
+    ny, nx, H = 5, 4, 20
+    counts = np.zeros((ny, nx, H), dtype=np.uint16)
+    for r in range(ny):
+        for c in range(nx):
+            counts[r, c, 5:10] = (r + 1) * (c + 1)   # 5 bins each = k -> gate = 5k
+    cube = FlimCube(counts=counts, resolution_ns=0.1, period_ns=2.0, n_bins=H,
+                    record_type="synthetic", channel=0, n_channels=1,
+                    frame_mode="single frame", n_frames=1, n_photons=int(counts.sum()),
+                    path=Path("synthetic.ptu"))
+    m = gating.GatingModel(cube)
+    g = m.gate(5, 9)   # inclusive -> 5 bins
+    for r in range(ny):
+        for c in range(nx):
+            assert g[r, c] == 5 * (r + 1) * (c + 1), (r, c, g[r, c])
+    assert int(g.sum()) == 5 * sum((r + 1) * (c + 1) for r in range(ny) for c in range(nx))
+    # floor of 1 count/bin over 5 bins removes exactly 5 per pixel (clamped at 0)
+    gf = m.gate(5, 9, floor_per_bin=1.0)
+    assert np.allclose(gf, np.clip(g.astype(float) - 5.0, 0, None))
+    # a floor above every pixel zeros the image
+    assert float(m.gate(5, 9, floor_per_bin=float(counts.max())).sum()) == 0.0
+    print("OK: per-pixel gated integral + floor subtraction are numerically exact.")
+
+
 def test_phasor_mono_exponential_on_semicircle():
     """A mono-exponential decay's phasor must land on the universal semicircle."""
     n, period_bins, tau_bins = 256, 256.0, 40.0
@@ -219,6 +244,7 @@ if __name__ == "__main__":
         test_spatial_binning_matches_brute_force()
         test_rld_recovers_known_lifetime()
         test_mono_exponential_fit_recovers_tau()
+        test_gate_integral_numeric_truth()
         test_phasor_mono_exponential_on_semicircle()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

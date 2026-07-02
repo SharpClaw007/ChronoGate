@@ -6,6 +6,8 @@ venv/
 # cached environments built by ChronoGate.command / ChronoGate.app
 .run-venv*/
 *.egg-info/
+build/
+dist/
 
 # macOS
 .DS_Store

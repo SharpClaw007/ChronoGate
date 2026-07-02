@@ -58,10 +58,10 @@ test and a green run of both suites.
 
 ## Wave E — distribution & tests
 
-- [ ] **13. Packaging + CI.** `pyproject.toml` with a `chronogate` entry point
+- [x] **13. Packaging + CI.** `pyproject.toml` with a `chronogate` entry point
   (pip-installable), and a GitHub Actions workflow running both suites headless
   (offscreen Qt) on push.
-- [ ] **14. Numeric-truth tests.** Assert the *stats numbers* and gated/lifetime
+- [x] **14. Numeric-truth tests.** Assert the *stats numbers* and gated/lifetime
   arithmetic against a synthetic cube with a known answer; run the loader against
   a synthetic old-style-style failure; pin the phasor of a mono-exponential.
 

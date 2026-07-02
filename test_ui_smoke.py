@@ -338,6 +338,12 @@ def test_floor_slider_per_pixel_and_scale() -> None:
 
 
 if __name__ == "__main__":
+    if not list(DATA_DIR.rglob("*.ptu")):
+        # The sample stack is not version-controlled (large), so on CI / a fresh
+        # checkout there is nothing to drive the GUI with. Skip cleanly; the
+        # numeric analysis is covered by test_gating.py (which needs no data).
+        print(f"No sample .ptu under {DATA_DIR.name}; skipping UI smoke tests.")
+        raise SystemExit(0)
     try:
         test_window_builds_and_renders()
         test_welcome_state_and_folder_load()
