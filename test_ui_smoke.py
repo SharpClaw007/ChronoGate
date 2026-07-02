@@ -175,6 +175,16 @@ def test_picks_and_keyboard_helpers() -> None:
     assert len(c.picks) == 1 and c.picks[0]["kind"] == "pixel", "click must add a pixel"
     w.picks.btn_clear.click()
 
+    # the readout above the image reports the SELECTED pixel's total-in-gate
+    r, col = np.unravel_index(int(c.model.intensity.argmax()), c.model.intensity.shape)
+    c._add_pixel(int(r), int(col))
+    floor = c._floor_per_pixel() if c.apply_floor else 0.0
+    gated = c.model.gate(c.gate_lo_bin, c.gate_hi_bin, floor_per_bin=floor)
+    title = c.ic.ax.get_title()
+    assert f"px({r},{col})" in title and f"{int(gated[r, col]):,} photons in gate" in title, title
+    w.picks.btn_clear.click()
+    assert "px(" not in c.ic.ax.get_title(), "readout reverts to the image total on clear"
+
     c.enter_lifetime()
     before = c._get_gate("A")
     c.nudge_gate(1, 1)

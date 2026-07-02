@@ -483,6 +483,21 @@ class ViewerController(QObject):
                     x, lower, y, where=in_gate & (y > lower), step="post",
                     color=color, alpha=0.32, lw=0))
 
+    def _pick_region(self, pick: dict):
+        """Resolve a pick to ``(r0, r1, c0, c1, tag)`` -- a single pixel grows to
+        its avg N×N box; an ROI keeps its bounds."""
+        ny, nx = self.model.intensity.shape
+        if pick["kind"] == "pixel":
+            r, c, b = pick["r"], pick["c"], max(1, self.box_size)
+            half = b // 2
+            r0, r1 = max(0, r - half), min(ny, r + half + 1)
+            c0, c1 = max(0, c - half), min(nx, c + half + 1)
+            tag = f"px({r},{c})" + (f"·{b}²" if b > 1 else "")
+        else:
+            r0, r1, c0, c1 = pick["r0"], pick["r1"], pick["c0"], pick["c1"]
+            tag = f"roi[{r0}:{r1},{c0}:{c1}]"
+        return r0, r1, c0, c1, tag
+
     def _redraw_pick_lines(self) -> None:
         for ln in self._pick_lines:
             ln.remove()
@@ -499,15 +514,7 @@ class ViewerController(QObject):
         n_pinned = len(self.pinned_picks)
         for i, pick in enumerate(shown_picks):
             pinned = i < n_pinned
-            if pick["kind"] == "pixel":
-                r, c, b = pick["r"], pick["c"], max(1, self.box_size)
-                half = b // 2
-                r0, r1 = max(0, r - half), min(ny, r + half + 1)
-                c0, c1 = max(0, c - half), min(nx, c + half + 1)
-                tag = f"px({r},{c})" + (f"·{b}²" if b > 1 else "")
-            else:
-                r0, r1, c0, c1 = pick["r0"], pick["r1"], pick["c0"], pick["c1"]
-                tag = f"roi[{r0}:{r1},{c0}:{c1}]"
+            r0, r1, c0, c1, tag = self._pick_region(pick)
             if pinned:
                 tag = "📌 " + tag
             raw = self.model.pixel_decay(r0, r1, c0, c1)
@@ -707,8 +714,14 @@ class ViewerController(QObject):
         t0 = self.model.t0_ns()
         in_gate = int(gated.sum())
         unit = "photons" if self.bin_size == 1 else f"cts ·{self.bin_size}×{self.bin_size}"
-        title = (f"gate {lo_ns:.2f}–{hi_ns:.2f} ns  (t0{lo_ns - t0:+.1f}…{hi_ns - t0:+.1f})\n"
-                 f"{in_gate:,} {unit} in gate")
+        title = f"gate {lo_ns:.2f}–{hi_ns:.2f} ns  (t0{lo_ns - t0:+.1f}…{hi_ns - t0:+.1f})\n"
+        if len(self.picks) == 1:
+            # a single pixel/region is selected -> report ITS total photons in gate
+            r0, r1, c0, c1, tag = self._pick_region(self.picks[0])
+            sel = int(gated[r0:r1, c0:c1].sum())
+            title += f"{tag}: {sel:,} {unit} in gate   ·   image {in_gate:,}"
+        else:
+            title += f"{in_gate:,} {unit} in gate"
 
         combine = self.combine if self.model.cube.n_channels >= 2 else "single"
         mask = (self.model.intensity >= self.threshold) if self.threshold > 0 else None
@@ -1115,6 +1128,8 @@ class ViewerController(QObject):
         # picks (via Pin) stay overlaid for comparison.
         self.picks = [pick]
         self._refresh_decay()
+        if self.mode == "intensity":   # update the image readout with this pick's total
+            self._refresh_image()
         self.statusMessage.emit(f"Showing decay for {pick['label']}.")
 
     def _shown_picks(self) -> list:
@@ -1130,12 +1145,16 @@ class ViewerController(QObject):
             self.pinned_picks.append(self.picks[0])
             self.picks = []
         self._refresh_decay()
+        if self.mode == "intensity":
+            self._refresh_image()
         self.statusMessage.emit(f"Pinned {len(self.pinned_picks)} decay(s); click another to compare.")
 
     def _clear_picks(self) -> None:
         self.picks = []
         self.pinned_picks = []
         self._refresh_decay()
+        if self.mode == "intensity":   # readout reverts to the whole-image total
+            self._refresh_image()
         self.statusMessage.emit("Picks cleared; showing total decay.")
 
     # ----------------------------------------------------- other event handlers
