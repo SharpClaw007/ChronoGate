@@ -271,6 +271,9 @@ class LifetimePanel(QGroupBox):
         self.cmap_life = QComboBox()
         self.cmap_life.addItems(LIFETIME_CMAPS)
         self.cmap_life.setToolTip("Colormap for the apparent-lifetime map.")
+        self.hsv = QCheckBox("intensity-weighted (HSV)")
+        self.hsv.setToolTip("Modulate the τ image brightness by photon count, so dim "
+                            "noisy pixels don't show a false lifetime.")
 
         lay = _col(self)
         edit_row = QHBoxLayout()
@@ -284,6 +287,7 @@ class LifetimePanel(QGroupBox):
         form.addRow("min photons", self.min_cts)
         form.addRow("τ colormap", self.cmap_life)
         lay.addLayout(form)
+        lay.addWidget(self.hsv)
         lay.addWidget(_muted("τ = Δt / ln(N_A / N_B)  ·  keep gates equal width"))
 
 

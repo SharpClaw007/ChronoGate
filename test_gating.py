@@ -193,6 +193,25 @@ def test_mono_exponential_fit_recovers_tau():
     print(f"OK: mono-exp fit recovers tau ~ {tau:.2f} ns from noisy low counts.")
 
 
+def test_phasor_mono_exponential_on_semicircle():
+    """A mono-exponential decay's phasor must land on the universal semicircle."""
+    n, period_bins, tau_bins = 256, 256.0, 40.0
+    t = np.arange(n)
+    decay = np.exp(-t / tau_bins)
+    counts = np.broadcast_to(decay, (4, 4, n)).astype(np.float64).copy()
+    g, s = gating.phasor(counts, period_bins, t0_bin=0.0)
+    w = 2 * np.pi / period_bins
+    g_exp, s_exp = 1 / (1 + (w * tau_bins) ** 2), (w * tau_bins) / (1 + (w * tau_bins) ** 2)
+    assert abs(g[0, 0] - g_exp) < 0.03 and abs(s[0, 0] - s_exp) < 0.03, (g[0, 0], s[0, 0])
+    # ...and it sits on the circle (centre 0.5, radius 0.5):
+    assert abs((g[0, 0] - 0.5) ** 2 + s[0, 0] ** 2 - 0.25) < 0.03
+    # empty pixels are NaN, not garbage
+    empty = np.zeros((1, 1, n))
+    ge, se = gating.phasor(empty, period_bins)
+    assert np.isnan(ge).all() and np.isnan(se).all()
+    print(f"OK: phasor of a mono-exp lands on the semicircle (g={g[0,0]:.3f}, s={s[0,0]:.3f}).")
+
+
 if __name__ == "__main__":
     try:
         test_prefix_sum_matches_direct_sum()
@@ -200,6 +219,7 @@ if __name__ == "__main__":
         test_spatial_binning_matches_brute_force()
         test_rld_recovers_known_lifetime()
         test_mono_exponential_fit_recovers_tau()
+        test_phasor_mono_exponential_on_semicircle()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

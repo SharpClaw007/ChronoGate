@@ -229,6 +229,53 @@ def mono_exponential_curve(
     return y
 
 
+def phasor(counts: np.ndarray, period_bins: float, t0_bin: float = 0.0,
+           harmonic: int = 1):
+    """Per-pixel phasor coordinates ``(g, s)`` -- fit-free lifetime analysis.
+
+    For each pixel's decay the phasor is the first Fourier harmonic of the
+    microtime histogram at the laser rep-rate::
+
+        g = Σ D(t) cos(ω t) / Σ D(t),   s = Σ D(t) sin(ω t) / Σ D(t)
+
+    with ``ω = 2π·harmonic / period`` and ``t`` measured in bins from ``t0``.
+    A mono-exponential of lifetime τ lands on the **universal semicircle**
+    (centre (0.5, 0), radius 0.5) at ``g = 1/(1+(ωτ)²)``, ``s = ωτ/(1+(ωτ)²)``;
+    mixtures fall inside it. No fitting, no IRF -- this is a display/clustering
+    tool, so it is *uncalibrated* (a t0/IRF offset rotates the cloud), which is
+    why ``t`` is referenced to ``t0``.
+
+    Parameters
+    ----------
+    counts : (Y, X, H) array
+    period_bins : float
+        Laser period in microtime bins (``period_ns / resolution_ns``).
+    t0_bin : float
+        Pulse reference; ``t`` is measured from here.
+
+    Returns
+    -------
+    (g, s) : two (Y, X) float arrays (NaN where a pixel has no photons).
+    """
+    counts = np.asarray(counts, dtype=np.float64)
+    h = counts.shape[-1]
+    t = np.arange(h, dtype=np.float64) - float(t0_bin)
+    w = 2.0 * np.pi * harmonic / float(period_bins)
+    cosv, sinv = np.cos(w * t), np.sin(w * t)
+    total = counts.sum(axis=-1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        g = counts @ cosv / total
+        s = counts @ sinv / total
+    ok = total > 0
+    return np.where(ok, g, np.nan), np.where(ok, s, np.nan)
+
+
+def phasor_semicircle(n: int = 200):
+    """The universal semicircle ``(g, s)`` for overlaying on a phasor plot."""
+    theta = np.linspace(0.0, np.pi, n)
+    return 0.5 + 0.5 * np.cos(theta), 0.5 * np.sin(theta)
+
+
 def _moving_sum(a: np.ndarray, window: int, axis: int) -> np.ndarray:
     """Centered moving sum of size ``window`` along ``axis`` (edges clamped).
 
@@ -386,6 +433,15 @@ class GatingModel:
         """Override t0 (the pulse reference) and recompute the pre-pulse background."""
         self.t0_bin = int(max(0, min(self.n_bins - 1, bin_index)))
         self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
+
+    def period_bins(self) -> float:
+        """Laser period expressed in microtime bins (falls back to the full axis)."""
+        p = self.cube.period_ns
+        return (p / self.resolution_ns) if np.isfinite(p) and p > 0 else float(self.n_bins)
+
+    def phasor(self, harmonic: int = 1):
+        """Per-pixel phasor ``(g, s)`` on the binned cube (see :func:`phasor`)."""
+        return phasor(self._counts, self.period_bins(), t0_bin=self.t0_bin, harmonic=harmonic)
 
     def pixel_decay(self, r0: int, r1: int, c0: int, c1: int) -> np.ndarray:
         """Mean decay (counts/bin per pixel) over the region rows [r0,r1) cols [c0,c1).

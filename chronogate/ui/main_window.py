@@ -178,11 +178,13 @@ class MainWindow(QMainWindow):
 
         self.act_intensity = QAction("&Intensity", self, checkable=True, shortcut=QKeySequence("I"))
         self.act_lifetime = QAction("Life&time (RLD)", self, checkable=True, shortcut=QKeySequence("T"))
+        self.act_phasor = QAction("&Phasor", self, checkable=True, shortcut=QKeySequence("P"))
         self.act_intensity.setChecked(True)
         grp = QActionGroup(self)
         grp.setExclusive(True)
         grp.addAction(self.act_intensity)
         grp.addAction(self.act_lifetime)
+        grp.addAction(self.act_phasor)
 
         self.act_log = QAction("&Log Y axis", self, checkable=True, shortcut=QKeySequence("L"))
         self.act_log.setChecked(True)
@@ -209,6 +211,7 @@ class MainWindow(QMainWindow):
         m_view = mb.addMenu("&View")
         m_view.addAction(self.act_intensity)
         m_view.addAction(self.act_lifetime)
+        m_view.addAction(self.act_phasor)
         m_view.addSeparator()
         m_view.addAction(self.act_log)
         m_view.addAction(self.act_floor)
@@ -227,6 +230,7 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         tb.addAction(self.act_intensity)
         tb.addAction(self.act_lifetime)
+        tb.addAction(self.act_phasor)
         tb.addSeparator()
         tb.addAction(self.act_log)
 
@@ -282,7 +286,7 @@ class MainWindow(QMainWindow):
         """
         self._stack.setCurrentWidget(self._workspace if loaded else self._welcome)
         for a in (self.act_export, self.act_save, self.act_load,
-                  self.act_intensity, self.act_lifetime, self.act_log, self.act_floor):
+                  self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log, self.act_floor):
             a.setEnabled(loaded)
 
     def set_lifetime_enabled(self, enabled: bool) -> None:

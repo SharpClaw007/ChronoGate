@@ -131,6 +131,7 @@ class ViewerController(QObject):
         self.edit_target = "A"
         self.lifetime_cmap = "turbo"
         self.rld_min_counts = 10.0
+        self.hsv_lifetime = False   # intensity-weight the lifetime image
         self._lifetime_init = False
         self.picks: list[dict] = []
         self._pick_lines: list = []
@@ -260,6 +261,7 @@ class ViewerController(QObject):
 
     # --------------------------------------------------------------- artists
     def _build_artists(self) -> None:
+        self._phasor_artists = []
         ax = self.dc.ax
         (self.decay_line,) = ax.plot([], [], color=theme.ACCENT, drawstyle="steps-post",
                                      lw=1.4, label="_nolegend_")
@@ -323,6 +325,7 @@ class ViewerController(QObject):
         w.lifetime.radio_a.toggled.connect(self._on_edit_radio)
         w.lifetime.min_cts.valueChanged.connect(self._on_min_counts)
         w.lifetime.cmap_life.currentTextChanged.connect(self._on_lifetime_cmap)
+        w.lifetime.hsv.toggled.connect(self._on_hsv_lifetime)
         w.picks.avg.valueChanged.connect(self._on_box_size)
         w.picks.smooth.valueChanged.connect(self._on_smooth)
         w.picks.fit.toggled.connect(self._on_fit_curve)
@@ -339,6 +342,7 @@ class ViewerController(QObject):
         w.filep.btn_load.clicked.connect(self._on_load)
         w.act_intensity.triggered.connect(lambda: self._enter_mode("intensity"))
         w.act_lifetime.triggered.connect(lambda: self._enter_mode("lifetime"))
+        w.act_phasor.triggered.connect(lambda: self._enter_mode("phasor"))
         w.act_log.toggled.connect(self._on_log)
         w.act_floor.toggled.connect(self._on_floor)
 
@@ -370,8 +374,8 @@ class ViewerController(QObject):
         widgets = [w.gate.spin_lo, w.gate.spin_hi, w.gate.t0, w.display.thr, w.display.floor,
                    w.display.cmap, w.lifetime.radio_a, w.lifetime.radio_b,
                    w.lifetime.min_cts, w.lifetime.cmap_life, w.picks.avg, w.picks.smooth, w.picks.fit,
-                   w.binning.bin, w.binning.target, w.filep.z, w.filep.channel,
-                   w.act_intensity, w.act_lifetime, w.act_log, w.act_floor, w.display.lock]
+                   w.binning.bin, w.binning.target, w.filep.z, w.filep.channel, w.lifetime.hsv,
+                   w.act_intensity, w.act_lifetime, w.act_phasor, w.act_log, w.act_floor, w.display.lock]
         with _blocked(*widgets):
             w.gate.spin_lo.setValue(lo_ns)
             w.gate.spin_hi.setValue(hi_ns)
@@ -386,6 +390,7 @@ class ViewerController(QObject):
             w.lifetime.radio_b.setChecked(self.edit_target == "B")
             w.lifetime.min_cts.setValue(int(self.rld_min_counts))
             w.lifetime.cmap_life.setCurrentText(self.lifetime_cmap)
+            w.lifetime.hsv.setChecked(self.hsv_lifetime)
             w.picks.avg.setValue(self.box_size)
             w.picks.smooth.setValue(self.smooth_bins)
             w.picks.fit.setChecked(self.fit_curve)
@@ -395,6 +400,7 @@ class ViewerController(QObject):
             w.filep.channel.setCurrentIndex(self.channel)
             w.act_intensity.setChecked(self.mode == "intensity")
             w.act_lifetime.setChecked(self.mode == "lifetime")
+            w.act_phasor.setChecked(self.mode == "phasor")
             w.act_log.setChecked(self.log_scale)
             w.act_floor.setChecked(self.apply_floor)
         w.gate.set_active_label(self.edit_target, self.mode)
@@ -618,10 +624,63 @@ class ViewerController(QObject):
             return
         if self.mode == "lifetime":
             self._refresh_lifetime_image()
+        elif self.mode == "phasor":
+            self._refresh_phasor_image()
         else:
             self._refresh_intensity_image()
 
+    def _set_phasor_axes(self, on: bool) -> None:
+        """Toggle the right panel between the image (colorbar, no ticks) and the
+        phasor scatter (g/s axes, no image/colorbar). Removes phasor artists."""
+        ax = self.ic.ax
+        for a in self._phasor_artists:
+            try:
+                a.remove()
+            except Exception:  # noqa: BLE001
+                pass
+        self._phasor_artists = []
+        self.im.set_visible(not on)
+        self.cbar.ax.set_visible(not on)
+        if on:
+            ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+            ax.set_yticks([0, 0.25, 0.5])
+            ax.set_xlabel("g"); ax.set_ylabel("s")
+        else:
+            ax.set_xticks([]); ax.set_yticks([])
+            ax.set_xlabel(""); ax.set_ylabel("")
+
+    def _refresh_phasor_image(self) -> None:
+        ax = self.ic.ax
+        self._set_phasor_axes(True)
+        g, s = self.model.phasor()
+        keep = np.isfinite(g) & np.isfinite(s)
+        if self.threshold > 0:
+            keep &= (self.model.intensity >= self.threshold)
+        g, s = g[keep], s[keep]
+        if g.size:
+            hb = ax.hexbin(g, s, gridsize=100, cmap=self._image_cmap("intensity"),
+                           mincnt=1, extent=(-0.05, 1.05, -0.02, 0.62))
+            self._phasor_artists.append(hb)
+        gc, sc = gating.phasor_semicircle()
+        (ln,) = ax.plot(gc, sc, color=theme.MUTED, lw=1.3, zorder=6)
+        self._phasor_artists.append(ln)
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.02, 0.62)
+        ax.set_aspect("equal")
+        ax.set_title(f"phasor  ·  {g.size:,} px  ·  harmonic 1", fontsize=9)
+        self.ic.draw_idle()
+        if self.w is not None:
+            gm = float(np.median(g)) if g.size else float("nan")
+            sm = float(np.median(s)) if s.size else float("nan")
+            self.w.stats.set_stats({
+                "Mode": "phasor (g, s)",
+                "Points": f"{g.size:,} / {self.model.n_pixels:,} px",
+                "Median": f"g {gm:.3f} · s {sm:.3f}" if g.size else "—",
+                "Note": "fit-free · uncalibrated (t0-ref)",
+            })
+
     def _refresh_intensity_image(self) -> None:
+        self._set_phasor_axes(False)
         res = self.model.resolution_ns
         # Per pixel: integrate that pixel's decay over the gate, minus the floor.
         floor = self._floor_per_pixel() if self.apply_floor else 0.0
@@ -640,10 +699,19 @@ class ViewerController(QObject):
         self.im.set_cmap(self._image_cmap("intensity"))
         self.im.set_data(display)
         self.im.set_clim(vmin, vmax)
+        self._fit_image_axes(display.shape)
         self.cbar.set_label("photons in gate")
         self.ic.ax.set_title(title, fontsize=9)
         self.ic.draw_idle()
         self._update_stats(gated, lo_ns, hi_ns)
+
+    def _fit_image_axes(self, shape) -> None:
+        """Restore the axes to show the image (e.g. after leaving phasor mode)."""
+        ny, nx = shape[:2]
+        ax = self.ic.ax
+        ax.set_aspect("equal")
+        ax.set_xlim(-0.5, nx - 0.5)
+        ax.set_ylim(ny - 0.5, -0.5)   # origin='upper'
 
     def _update_stats(self, gated, lo_ns: float, hi_ns: float) -> None:
         """Push gated-image statistics into the Stats panel (intensity mode)."""
@@ -664,6 +732,20 @@ class ViewerController(QObject):
                        if npix else "—"),
         })
 
+    def _lifetime_rgb(self, tau, vmin, vmax):
+        """Intensity-weighted lifetime image: hue from τ (the lifetime colormap),
+        brightness from photon count, so dim/noisy pixels don't shout a false τ."""
+        from matplotlib.colors import Normalize
+        cmap = matplotlib.colormaps[self.lifetime_cmap]
+        rgb = cmap(Normalize(vmin, vmax, clip=True)(tau))[..., :3]
+        inten = self.model.intensity.astype(np.float64)
+        pos = inten[inten > 0]
+        imax = float(np.percentile(pos, 99)) if pos.size else 1.0
+        v = np.clip(inten / max(imax, 1e-9), 0.0, 1.0)[..., None]
+        rgb = rgb * v
+        rgb[~np.isfinite(tau)] = 0.0
+        return rgb
+
     def _compute_lifetime_map(self):
         floor = self._floor_per_pixel() if self.apply_floor else 0.0
         rl = self.model.rapid_lifetime(self._get_gate("A"), self._get_gate("B"),
@@ -674,6 +756,7 @@ class ViewerController(QObject):
         return tau, rl
 
     def _refresh_lifetime_image(self) -> None:
+        self._set_phasor_axes(False)
         tau, rl = self._compute_lifetime_map()
         finite = tau[np.isfinite(tau)]
         if finite.size == 0:
@@ -682,8 +765,12 @@ class ViewerController(QObject):
                 f"increase binning (Auto) or lower 'min cts' to get a lifetime map.")
         vmin, vmax = self._clim_for("lifetime", finite, 2, 98, floor_gap=1e-3)
         self.im.set_cmap(self._image_cmap("lifetime"))
-        self.im.set_data(tau)
-        self.im.set_clim(vmin, vmax)
+        self.im.set_clim(vmin, vmax)   # keeps the colorbar meaningful even in HSV
+        if self.hsv_lifetime:
+            self.im.set_data(self._lifetime_rgb(tau, vmin, vmax))
+        else:
+            self.im.set_data(tau)
+        self._fit_image_axes(tau.shape)
         self.cbar.set_label("apparent lifetime (ns)")
 
         res = self.model.resolution_ns
@@ -773,26 +860,30 @@ class ViewerController(QObject):
     def _enter_mode(self, mode: str) -> None:
         if self.model is None:
             return
-        self.mode = "lifetime" if mode == "lifetime" else "intensity"
+        self.mode = mode if mode in ("lifetime", "phasor") else "intensity"
         if self.mode == "lifetime" and not self._lifetime_init:
             self._init_lifetime_gates()
             self._lifetime_init = True
-        if self.mode == "intensity":
+        if self.mode != "lifetime":
             self.edit_target = "A"
         if self.w is not None:
             self.w.set_lifetime_enabled(self.mode == "lifetime")
             with _blocked(self.w.lifetime.radio_a, self.w.lifetime.radio_b,
-                          self.w.act_intensity, self.w.act_lifetime):
+                          self.w.act_intensity, self.w.act_lifetime, self.w.act_phasor):
                 self.w.lifetime.radio_a.setChecked(self.edit_target == "A")
                 self.w.lifetime.radio_b.setChecked(self.edit_target == "B")
                 self.w.act_intensity.setChecked(self.mode == "intensity")
                 self.w.act_lifetime.setChecked(self.mode == "lifetime")
+                self.w.act_phasor.setChecked(self.mode == "phasor")
             self.w.gate.set_active_label(self.edit_target, self.mode)
-        if self.mode == "lifetime":
-            self.statusMessage.emit("Lifetime mode: two-gate RLD  τ = Δt / ln(N_A/N_B). "
-                                    "Keep gates equal width; edit A/B with the radio or the ns boxes.")
-        else:
-            self.statusMessage.emit("Intensity mode: single gate, photons summed per pixel.")
+        msg = {
+            "lifetime": "Lifetime mode: two-gate RLD  τ = Δt / ln(N_A/N_B). "
+                        "Keep gates equal width; edit A/B with the radio or the ns boxes.",
+            "phasor": "Phasor mode: each pixel → (g, s) on the universal semicircle "
+                      "(fit-free). Uncalibrated (t0-referenced); use the intensity threshold to trim noise.",
+            "intensity": "Intensity mode: single gate, photons integrated per pixel.",
+        }[self.mode]
+        self.statusMessage.emit(msg)
         self._refresh_decay()
         self._refresh_image()
 
@@ -805,6 +896,11 @@ class ViewerController(QObject):
 
     def _on_min_counts(self, value) -> None:
         self.rld_min_counts = max(0.0, float(value))
+        if self.mode == "lifetime":
+            self._refresh_image()
+
+    def _on_hsv_lifetime(self, checked) -> None:
+        self.hsv_lifetime = bool(checked)
         if self.mode == "lifetime":
             self._refresh_image()
 
@@ -850,6 +946,9 @@ class ViewerController(QObject):
 
     # -------------------------------------------------- per-pixel decay picking
     def _on_image_press(self, event) -> None:
+        if self.mode == "phasor":       # the right panel is a phasor plot, not the image
+            self._press_xy = self._press_data = None
+            return
         if (self.model is not None and event.inaxes is self.ic.ax
                 and event.button == 1 and event.xdata is not None):
             self._press_xy = (event.x, event.y)
@@ -1193,6 +1292,7 @@ class ViewerController(QObject):
             "gateB_lo_bin": self.gateB_lo_bin, "gateB_hi_bin": self.gateB_hi_bin,
             "gateB_lo_ns": round(blo_ns, 4), "gateB_hi_ns": round(bhi_ns, 4),
             "lifetime_cmap": self.lifetime_cmap, "rld_min_counts": self.rld_min_counts,
+            "hsv_lifetime": self.hsv_lifetime,
         }
 
     def _current_image_for_export(self):
@@ -1300,6 +1400,7 @@ class ViewerController(QObject):
             self._lifetime_init = True
         self.lifetime_cmap = s.get("lifetime_cmap", self.lifetime_cmap)
         self.rld_min_counts = float(s.get("rld_min_counts", self.rld_min_counts))
+        self.hsv_lifetime = bool(s.get("hsv_lifetime", self.hsv_lifetime))
         mode = "lifetime" if s.get("mode", self.mode) == "lifetime" else "intensity"
         self.edit_target = "B" if (mode == "lifetime" and s.get("edit_target") == "B") else "A"
 
