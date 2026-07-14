@@ -752,6 +752,44 @@ def test_phasor_lasso_selection() -> None:
     print(f"OK: phasor lasso selects {finite:,} px, highlights them, pools their decay.")
 
 
+def test_selection_stats_in_stats_panel() -> None:
+    """Selecting a population must state its aggregate (mean/median τ, photons,
+    spread) in the Stats panel -- not leave the user to export a CSV to learn it."""
+    from chronogate import metrics
+    w = _window()
+    c = w.controller
+
+    def stats_rows():
+        # isHidden(), not isVisible(): the window is never shown in this test.
+        return {w.stats._keys[i].text(): w.stats._vals[i].text()
+                for i in range(w.stats._ROWS) if not w.stats._keys[i].isHidden()}
+
+    # With nothing picked, the panel keeps its whole-image gate stats.
+    c._clear_picks()
+    assert "Gate" in stats_rows()
+
+    # A multi-pixel group: the panel reports the selection, not the whole image.
+    picked = [(10, 20), (11, 21), (12, 22)]
+    c._on_pixel_rows(picked)
+    rows = stats_rows()
+    assert "Selection" in rows and "3 px" in rows["Selection"], rows
+    total = int(c._gated[c.picks[0]["mask"]].sum())
+    assert f"{total:,}" in rows["In gate"], rows["In gate"]
+    st = metrics.mask_stats(c._metric_ctx(), c.picks[0]["mask"], keys=["in_gate"])
+    assert f"{st['in_gate']['mean']:.1f}" in rows["In gate"]
+    assert any("τ" in k for k in rows), "the aggregate lifetime row is present"
+
+    # A single-pixel pick is a 1-px selection (aggregates are still stated).
+    c._add_pixel(50, 60)
+    rows = stats_rows()
+    assert "1 px" in rows["Selection"], rows["Selection"]
+
+    # Clearing the picks restores the whole-image stats.
+    c._clear_picks()
+    assert "Gate" in stats_rows()
+    print("OK: the Stats panel states the selection's aggregates and reverts on clear.")
+
+
 def test_rld_gates_valid_at_load_and_mode_keyed() -> None:
     """Gate B is a real (later) gate from the moment a file loads, and the τ
     metric's gates follow the *mode*: the user's A/B pair in lifetime mode (so
@@ -845,6 +883,7 @@ if __name__ == "__main__":
         test_cache_lockscale_and_t0()
         test_probe_and_batch_export()
         test_threaded_decode()
+        test_selection_stats_in_stats_panel()
         test_rld_gates_valid_at_load_and_mode_keyed()
         test_floor_slider_summed_range_and_scale()
     except AssertionError as exc:

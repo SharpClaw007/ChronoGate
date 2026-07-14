@@ -188,6 +188,32 @@ def rank(
     )
 
 
+def mask_stats(ctx: MetricContext, mask: np.ndarray,
+               keys: list[str] | None = None) -> dict[str, dict]:
+    """Aggregate statistics of registered metrics over a pixel selection.
+
+    For each metric key, the mean / median / population std of its **finite**
+    values inside ``mask``, plus ``n`` -- how many selected pixels the metric is
+    actually defined for (a selection can contain pixels whose lifetime is
+    undefined). A metric with no finite values in the selection (or an empty
+    mask) yields ``n == 0`` and NaN aggregates rather than an error, so the
+    caller can state "no valid pixels" instead of crashing.
+    """
+    m = np.asarray(mask, dtype=bool)
+    out: dict[str, dict] = {}
+    for key in (keys or [met.key for met in metrics()]):
+        v = get(key).compute(ctx)[m]
+        finite = v[np.isfinite(v)]
+        n = int(finite.size)
+        if n:
+            out[key] = {"mean": float(finite.mean()), "median": float(np.median(finite)),
+                        "std": float(finite.std()), "n": n}
+        else:
+            nan = float("nan")
+            out[key] = {"mean": nan, "median": nan, "std": nan, "n": 0}
+    return out
+
+
 def value_range(ctx: MetricContext, key: str) -> tuple[float, float]:
     """The finite ``(min, max)`` of a metric -- the sensible bounds for its filter."""
     v = get(key).compute(ctx)

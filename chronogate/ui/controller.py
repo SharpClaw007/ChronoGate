@@ -1131,8 +1131,17 @@ class ViewerController(QObject):
         ax.set_ylim(ny - 0.5, -0.5)
 
     def _update_stats(self, gated, lo_ns: float, hi_ns: float) -> None:
-        """Push gated-image statistics into the Stats panel (intensity mode)."""
+        """Push gated-image statistics into the Stats panel (intensity mode).
+
+        With a selection active the panel speaks for *it* instead: the whole point
+        of selecting a population is to learn its aggregate numbers, and exporting
+        a CSV to read a mean is a dead end.
+        """
         if self.w is None:
+            return
+        active = self._active_pick()
+        if active is not None:
+            self._update_selection_stats(active, gated)
             return
         width_bins = abs(self.gate_hi_bin - self.gate_lo_bin) + 1
         total = int(self.model.intensity.sum())
@@ -1147,6 +1156,32 @@ class ViewerController(QObject):
             "Signal px": f"{npix:,} / {self.model.n_pixels:,}",
             "Per-px": (f"mean {signal.mean():.1f} · med {np.median(signal):.0f} · max {int(signal.max()):,}"
                        if npix else "—"),
+        })
+
+    def _selection_stats(self, pick: dict) -> tuple[np.ndarray, dict]:
+        """The pick's pixel mask and its aggregate metric statistics."""
+        mask = self._pick_pixel_mask(pick)
+        return mask, metrics.mask_stats(self._metric_ctx(), mask,
+                                        keys=["in_gate", "total", "tau"])
+
+    def _update_selection_stats(self, pick: dict, gated) -> None:
+        """The Stats panel for a selection: its aggregate τ, photons and spread."""
+        mask, st = self._selection_stats(pick)
+        n = int(mask.sum())
+        ing, tot, tau = st["in_gate"], st["total"], st["tau"]
+        if tau["n"]:
+            tau_row = (f"mean {tau['mean']:.2f} · med {tau['median']:.2f} "
+                       f"± {tau['std']:.2f} ns  ({tau['n']:,} of {n:,} valid)")
+        else:
+            tau_row = "— (too few photons; try Binning ▸ Auto)"
+        self.w.stats.set_stats({
+            "Selection": f"{self._pick_tag(pick)} — {n:,} px",
+            "In gate": (f"{int(self._pick_total(pick, gated)):,} {self._unit}"
+                        f"  ·  mean {ing['mean']:.1f} ± {ing['std']:.1f}/px"
+                        if ing["n"] else "—"),
+            "τ (RLD)": tau_row,
+            "Total": (f"mean {tot['mean']:.1f} · med {tot['median']:.0f} photons/px"
+                      if tot["n"] else "—"),
         })
 
     def _remove_tau_hist(self) -> None:

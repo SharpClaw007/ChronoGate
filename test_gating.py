@@ -344,6 +344,56 @@ def test_metrics_rank_filters_and_sorts():
     print(f"OK: metric ranking filters/sorts/truncates ({len(metrics.metrics())} metrics registered).")
 
 
+def test_mask_stats_aggregates_selection():
+    """Aggregate statistics (mean/median/std/valid-n) of metrics over a mask."""
+    from chronogate import metrics
+
+    ny, nx, H = 4, 5, 16
+    counts = np.zeros((ny, nx, H), dtype=np.uint16)
+    for r in range(ny):
+        for c in range(nx):
+            k = r * nx + c + 1
+            counts[r, c, 4:8] = 2 * k        # early gate: 8k photons
+            counts[r, c, 8:12] = k           # late gate: 4k photons -> ratio 2
+    cube = FlimCube(counts=counts, resolution_ns=0.1, period_ns=1.6, n_bins=H,
+                    record_type="synthetic", channel=0, n_channels=1,
+                    frame_mode="single frame", n_frames=1, n_photons=int(counts.sum()),
+                    path=Path("synthetic.ptu"))
+    m = gating.GatingModel(cube)
+    ctx = metrics.MetricContext(model=m, gate_a=(4, 7), gate_b=(8, 11))
+
+    mask = np.zeros((ny, nx), dtype=bool)
+    mask[0, 0] = mask[0, 1] = mask[1, 0] = True    # k = 1, 2, 6 -> in_gate 8, 16, 48
+
+    st = metrics.mask_stats(ctx, mask, keys=["in_gate", "tau", "total"])
+    ing = st["in_gate"]
+    vals = np.array([8.0, 16.0, 48.0])
+    assert ing["n"] == 3
+    assert abs(ing["mean"] - vals.mean()) < 1e-9
+    assert abs(ing["median"] - np.median(vals)) < 1e-9
+    assert abs(ing["std"] - vals.std()) < 1e-9
+
+    # Every selected pixel decays by the same factor 2 across the equal-width
+    # gates, so tau is the same everywhere: dt / ln 2, with zero spread.
+    tau = st["tau"]
+    dt = (8 - 4) * 0.1
+    assert tau["n"] == 3
+    assert abs(tau["mean"] - dt / np.log(2.0)) < 1e-9
+    assert abs(tau["median"] - tau["mean"]) < 1e-9 and tau["std"] < 1e-12
+
+    # A selection where the metric is undefined everywhere: n == 0, NaN stats,
+    # no error (the caller states "no valid pixels" rather than crashing).
+    starved = metrics.MetricContext(model=m, gate_a=(4, 7), gate_b=(8, 11),
+                                    rld_min_counts=1e9)
+    st2 = metrics.mask_stats(starved, mask, keys=["tau"])
+    assert st2["tau"]["n"] == 0 and np.isnan(st2["tau"]["mean"])
+
+    # An empty mask is n == 0 for every metric, not a crash.
+    st3 = metrics.mask_stats(ctx, np.zeros((ny, nx), bool), keys=["in_gate"])
+    assert st3["in_gate"]["n"] == 0
+    print("OK: mask_stats aggregates a selection (mean/median/std over finite values).")
+
+
 if __name__ == "__main__":
     try:
         test_prefix_sum_matches_direct_sum()
@@ -356,6 +406,7 @@ if __name__ == "__main__":
         test_phasor_mono_exponential_on_semicircle()
         test_mask_decay_pools_selected_pixels()
         test_metrics_rank_filters_and_sorts()
+        test_mask_stats_aggregates_selection()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)
