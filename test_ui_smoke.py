@@ -630,6 +630,37 @@ def test_selection_export() -> None:
     print("OK: selections export as a label map + pooled decays + a per-pixel metric table.")
 
 
+def test_selection_aggregates_in_provenance() -> None:
+    """The numbers a paper quotes (mean/median τ, photons per selection) must
+    leave the program with the data -- recorded per label in the provenance."""
+    from chronogate import metrics
+    w = _window()
+    c = w.controller
+    c._add_pixel(100, 100)
+    c._on_pin()
+    c._on_pixel_rows([(10, 20), (11, 21), (12, 22)])
+
+    out = Path(tempfile.mkdtemp())
+    paths = c.export(out, include_pixel_table=False)   # aggregates are cheap: always on
+    sel = json.loads(Path(paths["provenance"]).read_text())["selection"]
+    aggs = sel["aggregates"]
+    assert len(aggs) == 2 == len(sel["labels"]), "one aggregate block per label"
+
+    # The group's numbers match mask_stats exactly (NaN travels as null, not NaN).
+    st = metrics.mask_stats(c._metric_ctx(), c.picks[0]["mask"])
+    for key, d in st.items():
+        got = aggs[1][key]
+        assert got["n"] == d["n"]
+        for stat in ("mean", "median", "std"):
+            if np.isfinite(d[stat]):
+                assert abs(got[stat] - d[stat]) < 1e-9, (key, stat)
+            else:
+                assert got[stat] is None, (key, stat)
+    assert json.dumps(sel)   # strictly JSON-serialisable (no NaN literals)
+    c._clear_picks()
+    print("OK: per-selection aggregates ride along in the provenance JSON.")
+
+
 def test_big_pixel_table_warning_and_optout() -> None:
     """A 160k-pixel lasso is a ~10 MB pixel CSV. It is never capped -- it is the
     data the user asked for -- but a big one is written knowingly, not by surprise."""
@@ -1110,6 +1141,7 @@ if __name__ == "__main__":
         test_pixel_list()
         test_pixel_list_multi_select()
         test_selection_export()
+        test_selection_aggregates_in_provenance()
         test_big_pixel_table_warning_and_optout()
         test_settings_roundtrip_restores_selection()
         test_pin_glyph_is_in_the_plot_font()

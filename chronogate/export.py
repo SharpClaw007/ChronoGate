@@ -52,6 +52,10 @@ class Selection:
     decays: list[np.ndarray]                           # per label, (H,)
     pixel_columns: list[str]                           # e.g. row, col, in_gate, tau...
     pixel_blocks: list[np.ndarray] = field(default_factory=list)   # per label, (N, C)
+    # Per label: {metric key: {"mean", "median", "std", "n"}}, JSON-safe (no NaN --
+    # undefined stats travel as None). These are the numbers a paper quotes, so
+    # they ride along in the provenance even when the pixel table is omitted.
+    aggregates: list[dict] | None = None
 
     def counts(self) -> list[int]:
         return [int(b.shape[0]) for b in self.pixel_blocks]
@@ -242,6 +246,7 @@ def export_all(
             "pixel_counts": selection.counts(),
             "pixel_columns": selection.pixel_columns,
             "label_map_values": "0 = unselected; k = the k-th label above",
+            "aggregates": selection.aggregates,
         }
         if include_pixel_table:
             spix_path = out_dir / f"{base}_selection_pixels.csv"

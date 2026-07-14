@@ -97,6 +97,13 @@ _MAX_SAVED_PIXELS = 50_000
 _PIXEL_TABLE_WARN_ROWS = 100_000
 
 
+def _json_safe_stats(stats: dict) -> dict:
+    """mask_stats output with non-finite values as None -- NaN is not JSON."""
+    return {k: {kk: (None if isinstance(v, float) and not np.isfinite(v) else v)
+                for kk, v in d.items()}
+            for k, d in stats.items()}
+
+
 @contextmanager
 def _blocked(*objs):
     """Block Qt signals on ``objs`` for the duration (RAII via QSignalBlocker)."""
@@ -2411,7 +2418,7 @@ class ViewerController(QObject):
         columns = {k: metrics.get(k).compute(ctx) for k in keys}
         n_pinned = len(self.pinned_picks)
         label_map = np.zeros(self.model.intensity.shape, dtype=np.uint16)
-        labels, decays, blocks = [], [], []
+        labels, decays, blocks, aggs = [], [], [], []
         for i, pick in enumerate(picks):
             tag = ("pinned " if i < n_pinned else "") + self._pick_tag(pick)
             mask = self._pick_pixel_mask(pick)
@@ -2421,9 +2428,11 @@ class ViewerController(QObject):
             decays.append(np.asarray(self._pick_decay(pick), dtype=float))
             blocks.append(np.column_stack(
                 [rr, cc] + [columns[k][rr, cc] for k in keys]).astype(float))
+            aggs.append(_json_safe_stats(metrics.mask_stats(ctx, mask, keys=keys)))
         return export_mod.Selection(
             labels=labels, label_map=label_map, time_ns=self.model.cube.time_axis_ns,
-            decays=decays, pixel_columns=["row", "col"] + keys, pixel_blocks=blocks)
+            decays=decays, pixel_columns=["row", "col"] + keys, pixel_blocks=blocks,
+            aggregates=aggs)
 
     def _current_image_for_export(self):
         floor = self._floor_per_pixel() if self.apply_floor else 0.0
