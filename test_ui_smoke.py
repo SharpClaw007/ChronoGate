@@ -752,6 +752,41 @@ def test_phasor_lasso_selection() -> None:
     print(f"OK: phasor lasso selects {finite:,} px, highlights them, pools their decay.")
 
 
+def test_rld_gates_valid_at_load_and_mode_keyed() -> None:
+    """Gate B is a real (later) gate from the moment a file loads, and the τ
+    metric's gates follow the *mode*: the user's A/B pair in lifetime mode (so
+    the τ column matches the τ map), a split of the current gate elsewhere."""
+    w = _window()
+    c = w.controller
+
+    # At load, B is already a valid, later gate -- not a copy of A.
+    assert c.gateB_lo_bin > c.gate_lo_bin, "gate B must be configured at load"
+    assert c.gateB_hi_bin >= c.gateB_lo_bin
+    assert c.gateB_hi_bin < c.model.n_bins
+
+    # Intensity mode: τ uses the current gate split into equal halves.
+    a = (c.gate_lo_bin, c.gate_hi_bin)
+    half = (a[1] - a[0] + 1) // 2
+    early, late = c._rld_gates()
+    assert early == (a[0], a[0] + half - 1) and late == (a[0] + half, a[0] + 2 * half - 1)
+
+    # Lifetime mode: τ uses the user's A/B pair verbatim (matches the τ map).
+    c.enter_lifetime()
+    assert c._rld_gates() == ((c.gate_lo_bin, c.gate_hi_bin),
+                              (c.gateB_lo_bin, c.gateB_hi_bin))
+
+    # Back in intensity mode the split rule applies again -- even though a B
+    # gate has been configured -- so the τ column always reflects the gate
+    # you are actually looking at.
+    c._enter_mode("intensity")
+    a = tuple(sorted((c.gate_lo_bin, c.gate_hi_bin)))
+    half = (a[1] - a[0] + 1) // 2
+    assert c._rld_gates() == ((a[0], a[0] + half - 1),
+                              (a[0] + half, a[0] + 2 * half - 1)), \
+        "intensity mode must split the current gate, not reuse the lifetime pair"
+    print("OK: gate B valid from load; τ gates follow the mode (A/B in lifetime, split elsewhere).")
+
+
 def test_floor_slider_summed_range_and_scale() -> None:
     import math
     w = _window()
@@ -810,6 +845,7 @@ if __name__ == "__main__":
         test_cache_lockscale_and_t0()
         test_probe_and_batch_export()
         test_threaded_decode()
+        test_rld_gates_valid_at_load_and_mode_keyed()
         test_floor_slider_summed_range_and_scale()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

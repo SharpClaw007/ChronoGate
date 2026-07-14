@@ -1297,13 +1297,18 @@ class ViewerController(QObject):
             except Exception:
                 pass
 
-    def _init_lifetime_gates(self) -> None:
+    def _default_lifetime_gates(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        """Equal-width A/B defaults: the first two quarters of the post-pulse axis."""
         n, t0 = self.model.n_bins, self.model.t0_bin
         width = max(2, (n - 1 - t0) // 4)
-        self.gate_lo_bin = min(t0, n - 1)
-        self.gate_hi_bin = min(t0 + width - 1, n - 1)
-        self.gateB_lo_bin = min(t0 + width, n - 1)
-        self.gateB_hi_bin = min(t0 + 2 * width - 1, n - 1)
+        a = (min(t0, n - 1), min(t0 + width - 1, n - 1))
+        b = (min(t0 + width, n - 1), min(t0 + 2 * width - 1, n - 1))
+        return a, b
+
+    def _init_lifetime_gates(self) -> None:
+        a, b = self._default_lifetime_gates()
+        (self.gate_lo_bin, self.gate_hi_bin) = a
+        (self.gateB_lo_bin, self.gateB_hi_bin) = b
 
     def _enter_mode(self, mode: str) -> None:
         if self.model is None:
@@ -1663,17 +1668,17 @@ class ViewerController(QObject):
 
     # -------------------------------------------------------------- pixel list
     def _rld_gates(self) -> tuple[tuple[int, int], tuple[int, int]]:
-        """The two gates the τ metric uses.
+        """The two gates the τ metric uses -- keyed on the *mode*, nothing subtler.
 
         In lifetime mode they are the user's A/B gates, so the τ column matches the
-        τ map exactly. Otherwise no late gate has ever been configured (B starts out
-        equal to A, which makes Δt = 0 and every τ undefined), so fall back to
-        splitting the current gate into equal early/late halves -- which is just the
-        same two-gate RLD estimator applied to the gate you are actually using.
+        τ map exactly. In every other mode the current gate is split into equal
+        early/late halves -- the same two-gate RLD estimator applied to the gate you
+        are actually looking at (a stale lifetime pair would quote a τ for gates the
+        view no longer shows).
         """
         a = tuple(sorted((self.gate_lo_bin, self.gate_hi_bin)))
         b = tuple(sorted((self.gateB_lo_bin, self.gateB_hi_bin)))
-        if self._lifetime_init and b[0] > a[0]:
+        if self.mode == "lifetime":
             return a, b
         half = (a[1] - a[0] + 1) // 2
         if half < 1:
@@ -2061,8 +2066,9 @@ class ViewerController(QObject):
         if first:
             self.gate_lo_bin = self.model.t0_bin
             self.gate_hi_bin = n - 1
-            self.gateB_lo_bin = self.gate_lo_bin
-            self.gateB_hi_bin = self.gate_hi_bin
+            # Gate B is a valid, later gate from the start (the second quarter of
+            # the post-pulse axis), so no code path ever sees a degenerate B == A.
+            _, (self.gateB_lo_bin, self.gateB_hi_bin) = self._default_lifetime_gates()
             self._lifetime_init = False
         else:
             self.gate_lo_bin = min(self.gate_lo_bin, n - 1)
