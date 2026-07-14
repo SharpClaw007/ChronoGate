@@ -259,6 +259,33 @@ def test_phasor_mono_exponential_on_semicircle():
     print(f"OK: phasor of a mono-exp lands on the semicircle (g={g[0,0]:.3f}, s={s[0,0]:.3f}).")
 
 
+def test_mask_decay_pools_selected_pixels():
+    """A boolean pixel mask (e.g. a phasor lasso) pools into one per-pixel decay."""
+    ny, nx, H = 6, 6, 12
+    counts = np.zeros((ny, nx, H), dtype=np.uint16)
+    counts[..., 3] = 1                       # every pixel: 1 photon in bin 3
+    counts[0, :, 7] = 10                     # row 0 alone: 10 more in bin 7
+    cube = FlimCube(counts=counts, resolution_ns=0.1, period_ns=1.2, n_bins=H,
+                    record_type="synthetic", channel=0, n_channels=1,
+                    frame_mode="single frame", n_frames=1, n_photons=int(counts.sum()),
+                    path=Path("synthetic.ptu"))
+    m = gating.GatingModel(cube)
+
+    mask = np.zeros((ny, nx), dtype=bool)
+    mask[0, :] = True                        # select exactly row 0
+    d = m.mask_decay(mask)
+    assert d.shape == (H,)
+    assert d[3] == 1.0 and d[7] == 10.0, d   # mean over the 6 selected pixels
+    # the same pixels chosen as a rectangle must give the identical curve
+    assert np.allclose(d, m.pixel_decay(0, 1, 0, nx))
+    # a mask over everything = the whole-image mean; row 0's extra is diluted by 1/6
+    assert np.allclose(m.mask_decay(np.ones((ny, nx), bool))[7], 10.0 / ny)
+    # degenerate masks are zeros, not a crash
+    assert not m.mask_decay(np.zeros((ny, nx), bool)).any()
+    assert not m.mask_decay(np.ones((2, 2), bool)).any()   # wrong shape
+    print("OK: mask_decay pools an arbitrary pixel selection into one decay.")
+
+
 if __name__ == "__main__":
     try:
         test_prefix_sum_matches_direct_sum()
@@ -269,6 +296,7 @@ if __name__ == "__main__":
         test_gate_integral_numeric_truth()
         test_auto_floor_robust_to_rising_edge()
         test_phasor_mono_exponential_on_semicircle()
+        test_mask_decay_pools_selected_pixels()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

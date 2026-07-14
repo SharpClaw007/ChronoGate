@@ -319,6 +319,174 @@ def test_threaded_decode() -> None:
     print("OK: background (QThread) decode delivers the model and joins cleanly.")
 
 
+def _settle(c, w, ax, xdata, ydata):
+    """Move the cursor to a pixel and let the hover debounce fire."""
+    from PySide6.QtCore import QCoreApplication
+    import time
+    c._on_image_motion(_FakeEvent(ax, 0, 0, xdata, ydata))
+    deadline = time.monotonic() + 2.0
+    while c._hover_timer.isActive() and time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+
+
+def test_hover_probe() -> None:
+    """Moving the cursor over the image previews that pixel's decay -- no click.
+
+    The readout is instant on every motion; the decay is drawn once the cursor
+    settles (a full redraw is ~60 ms, far too slow to run on every motion event).
+    """
+    w = _window()
+    c = w.controller
+    ax = c.ic.ax
+    assert c.hover_probe and not c._shown_picks()
+
+    # A motion event: the status readout is immediate, the decay is only queued.
+    c._on_image_motion(_FakeEvent(ax, 0, 0, 33.0, 22.0))
+    assert c._hover_rc == (22, 33)
+    assert c._hover_timer.isActive(), "the decay redraw is debounced, not run inline"
+    assert c.hover_pick is None, "nothing is drawn until the cursor settles"
+    probe = w.probe_label.text()
+    assert probe.startswith("px(22,33)") and "in gate" in probe, probe
+    assert f"{int(c._gated[22, 33]):,}" in probe, "the readout quotes that pixel's counts"
+
+    # Once it settles, the preview appears -- without locking anything in.
+    _settle(c, w, ax, 33.0, 22.0)
+    assert c.hover_pick == {"kind": "pixel", "r": 22, "c": 33, "label": "px(22,33)"}
+    assert len(c._shown_picks()) == 1, "the hovered pixel's decay is drawn"
+    assert not c.picks, "a hover must NOT lock the pick in"
+    assert "px(22,33)" in c.ic.ax.get_title(), "the image readout follows the cursor"
+
+    # Staying inside the same pixel is free; a new pixel re-arms the preview.
+    c._hover_timer.stop()
+    c._on_image_motion(_FakeEvent(ax, 0, 0, 33.2, 22.1))
+    assert not c._hover_timer.isActive(), "staying inside a pixel must not re-render"
+    _settle(c, w, ax, 90.0, 80.0)
+    assert c.hover_pick["r"] == 80 and c.hover_pick["c"] == 90
+
+    # Leaving the image drops the preview and both readouts revert.
+    c._on_image_leave()
+    assert c.hover_pick is None and not c._shown_picks()
+    assert w.probe_label.text() == "" and "px(" not in c.ic.ax.get_title()
+
+    # A click locks the pixel in; hovering then previews *over* it, not beside it.
+    c._add_pixel(50, 50)
+    assert len(c.picks) == 1 and c.hover_pick is None
+    _settle(c, w, ax, 33.0, 22.0)
+    assert len(c._shown_picks()) == 1, "the preview replaces, not stacks on, the locked pick"
+    assert c._shown_picks()[0] is c.hover_pick and c.picks[0]["r"] == 50
+    c._on_image_leave()
+    assert c._shown_picks()[0] is c.picks[0], "the locked pick returns when the cursor leaves"
+
+    # A click while a preview is queued must win (no stale preview lands after it).
+    c._on_image_motion(_FakeEvent(ax, 0, 0, 200.0, 200.0))
+    assert c._hover_timer.isActive()
+    c._add_pixel(11, 11)
+    assert not c._hover_timer.isActive(), "the click cancels the queued preview"
+    assert c.hover_pick is None and c.picks[0]["r"] == 11
+
+    # Turning hover off stops the preview entirely.
+    w.picks.hover.setChecked(False)
+    c._on_image_motion(_FakeEvent(ax, 0, 0, 33.0, 22.0))
+    assert not c._hover_timer.isActive() and c.hover_pick is None, "hover off -> no preview"
+    w.picks.hover.setChecked(True)
+    print("OK: hover reads out instantly, previews the decay on settle, click locks it in.")
+
+
+def test_pixel_cursor_and_goto() -> None:
+    """The arrow-key pixel cursor and the exact (row, col) jump."""
+    w = _window()
+    c = w.controller
+    ny, nx = c.model.intensity.shape
+
+    # No pixel picked -> nudge_pixel declines, so the arrow key can nudge the gate.
+    c._clear_picks()
+    assert c.nudge_pixel(0, 1) is False
+
+    c._add_pixel(60, 60)
+    assert (w.picks.row.value(), w.picks.col.value()) == (60, 60), "boxes track the pick"
+    assert c.nudge_pixel(-1, 0) is True
+    assert (c.picks[0]["r"], c.picks[0]["c"]) == (59, 60)
+    c.nudge_pixel(0, 10)                       # a Shift+Right stride
+    assert (c.picks[0]["r"], c.picks[0]["c"]) == (59, 70)
+    assert (w.picks.row.value(), w.picks.col.value()) == (59, 70)
+
+    # The cursor clamps at the border rather than wrapping or throwing.
+    c._add_pixel(0, 0)
+    c.nudge_pixel(-5, -5)
+    assert (c.picks[0]["r"], c.picks[0]["c"]) == (0, 0)
+    c._add_pixel(ny - 1, nx - 1)
+    c.nudge_pixel(5, 5)
+    assert (c.picks[0]["r"], c.picks[0]["c"]) == (ny - 1, nx - 1)
+
+    # Typed coordinates: the Go button selects exactly that pixel.
+    w.picks.row.setValue(12)
+    w.picks.col.setValue(34)
+    w.picks.btn_go.click()
+    assert c.picks[0] == {"kind": "pixel", "r": 12, "c": 34, "label": "px(12,34)"}
+    assert f"px(12,34)" in c.ic.ax.get_title()
+
+    # An ROI is not a pixel cursor, so the arrows fall back to the gate.
+    c._add_pick({"kind": "roi", "r0": 5, "r1": 9, "c0": 5, "c1": 9, "label": "roi"})
+    assert c.nudge_pixel(0, 1) is False
+    print("OK: arrow-key pixel cursor steps/clamps; (row, col) jump selects exactly.")
+
+
+def test_pick_markers_on_image() -> None:
+    """A picked pixel is invisible at 1/512 of the panel -- it needs a marker."""
+    w = _window()
+    c = w.controller
+    c._clear_picks()
+    assert not c._pick_markers
+    c._add_pixel(64, 96)
+    assert len(c._pick_markers) == 2, "a pixel pick draws a box + a crosshair"
+    xs, ys = c._pick_markers[1].get_data()
+    assert (int(xs[0]), int(ys[0])) == (96, 64), "the crosshair sits on the picked pixel"
+    c._add_pick({"kind": "roi", "r0": 10, "r1": 20, "c0": 30, "c1": 44, "label": "roi"})
+    assert len(c._pick_markers) == 1, "an ROI draws just its box"
+    assert c._pick_markers[0].get_width() == 14 and c._pick_markers[0].get_height() == 10
+    c._clear_picks()
+    assert not c._pick_markers, "clearing removes the markers"
+    print("OK: picks are marked on the image (crosshair for a pixel, box for an ROI).")
+
+
+def test_phasor_lasso_selection() -> None:
+    """Lasso a phasor cluster -> those pixels are selected by lifetime signature."""
+    w = _window()
+    c = w.controller
+    c._enter_mode("phasor")
+    g, s = c._phasor_maps()
+    assert c._phasor_maps() is c._phasor_gs, "the (g, s) maps are cached, not recomputed"
+
+    # A lasso around the whole phasor plane selects every pixel that has photons.
+    c._on_phasor_lasso([(-1.0, -1.0), (2.0, -1.0), (2.0, 2.0), (-1.0, 2.0)])
+    finite = int((np.isfinite(g) & np.isfinite(s)).sum())
+    assert c.phasor_mask is not None and int(c.phasor_mask.sum()) == finite
+    assert len(c.picks) == 1 and c.picks[0]["kind"] == "mask"
+    assert len(c._pick_lines) == 1, "the selected population's pooled decay is drawn"
+    assert c._pick_decay(c.picks[0]).size == c.model.n_bins
+
+    # An empty lasso is refused rather than clearing the selection.
+    before = c.phasor_mask
+    c._on_phasor_lasso([(-1.0, -1.0), (-0.9, -1.0), (-0.9, -0.9)])
+    assert c.phasor_mask is before, "an empty lasso must not wipe the current selection"
+
+    # Back on the image, the selection is highlighted and reports its own counts.
+    c._enter_mode("intensity")
+    assert c.mask_im.get_visible(), "selected pixels are tinted on the image"
+    assert c.mask_im.get_array().shape[:2] == c.model.intensity.shape
+    floor = c._floor_per_pixel() if c.apply_floor else 0.0
+    gated = c.model.gate(c.gate_lo_bin, c.gate_hi_bin, floor_per_bin=floor)
+    total = int(gated[c.phasor_mask].sum())
+    assert "phasor sel" in c.ic.ax.get_title() and f"{total:,}" in c.ic.ax.get_title()
+
+    # Clicking a pixel supersedes the lasso; Clear wipes everything.
+    c._add_pixel(40, 40)
+    assert c.phasor_mask is None and not c.mask_im.get_visible()
+    c._clear_picks()
+    assert c.phasor_mask is None and not c._shown_picks()
+    print(f"OK: phasor lasso selects {finite:,} px, highlights them, pools their decay.")
+
+
 def test_floor_slider_summed_range_and_scale() -> None:
     import math
     w = _window()
@@ -363,6 +531,10 @@ if __name__ == "__main__":
         test_welcome_state_and_folder_load()
         test_lifetime_export_and_settings_roundtrip()
         test_picks_and_keyboard_helpers()
+        test_hover_probe()
+        test_pixel_cursor_and_goto()
+        test_pick_markers_on_image()
+        test_phasor_lasso_selection()
         test_fit_overlay()
         test_wave_c_views()
         test_cache_lockscale_and_t0()

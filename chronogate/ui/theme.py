@@ -28,6 +28,9 @@ DISABLED = "#AEB6C0"    # text/controls in an inactive panel
 GATE_A = "#E8833A"      # early gate
 GATE_B = "#2FA84F"      # late gate
 FLOOR = "#D1495B"       # noise-floor line (restrained alert tone)
+# Selection magenta: deliberately a hue that viridis/turbo/magma never produce,
+# so lasso-selected pixels can never be mistaken for a colormap value.
+SELECT = "#F0189B"
 GRID = "#EEF1F4"        # plot gridlines
 
 

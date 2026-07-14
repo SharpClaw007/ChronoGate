@@ -116,10 +116,16 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self.header_label = QLabel("")
         self.header_label.setObjectName("Header")
+        # Live readout for the pixel under the cursor. It lives in the status bar
+        # because updating a QLabel is free, while repainting the plot is not --
+        # so the probe can track the mouse at full rate.
+        self.probe_label = QLabel("")
+        self.probe_label.setObjectName("Header")
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(200)
         self.progress.setVisible(False)
         self.statusBar().addWidget(self.progress)
+        self.statusBar().addPermanentWidget(self.probe_label)
         self.statusBar().addPermanentWidget(self.header_label)
 
         # --- controller: owns the model, artists and all logic ---
@@ -248,15 +254,47 @@ class MainWindow(QMainWindow):
         self.act_quit.triggered.connect(self.close)
         self.act_about.triggered.connect(self._show_about)
 
+    @staticmethod
+    def _scoped(key: str, widget: QWidget, slot) -> QShortcut:
+        """A shortcut that only fires while ``widget`` (or a child) has focus.
+
+        Arrow keys mean different things depending on which plot you are working
+        in -- step a pixel on the image, nudge the gate on the decay -- and they
+        must not be swallowed window-wide, or every spin box would lose its
+        Up/Down. Scoping each binding to its canvas keeps both true and avoids an
+        ambiguous-shortcut overload.
+        """
+        sc = QShortcut(QKeySequence(key), widget, activated=slot)
+        sc.setContext(Qt.WidgetWithChildrenShortcut)
+        return sc
+
     def _build_shortcuts(self) -> None:
         c = self.controller
         QShortcut(QKeySequence("C"), self, activated=self.picks.btn_clear.click)
-        QShortcut(QKeySequence(Qt.Key_Left), self, activated=lambda: c.nudge_gate(-1, -1))
-        QShortcut(QKeySequence(Qt.Key_Right), self, activated=lambda: c.nudge_gate(1, 1))
-        QShortcut(QKeySequence("Shift+Left"), self, activated=lambda: c.nudge_gate(0, -1))
-        QShortcut(QKeySequence("Shift+Right"), self, activated=lambda: c.nudge_gate(0, 1))
         QShortcut(QKeySequence(Qt.Key_PageUp), self, activated=lambda: c.step_z(1))
         QShortcut(QKeySequence(Qt.Key_PageDown), self, activated=lambda: c.step_z(-1))
+
+        # Image canvas: the arrow keys are a pixel cursor (Shift = 10-px strides).
+        img = self.image_canvas
+        for key, (dr, dc) in {
+            "Left": (0, -1), "Right": (0, 1), "Up": (-1, 0), "Down": (1, 0),
+            "Shift+Left": (0, -10), "Shift+Right": (0, 10),
+            "Shift+Up": (-10, 0), "Shift+Down": (10, 0),
+        }.items():
+            self._scoped(key, img, lambda dr=dr, dc=dc: c.nudge_pixel(dr, dc))
+
+        # Decay canvas: the arrow keys move/resize the active gate.
+        dec = self.decay_canvas
+        self._scoped("Left", dec, lambda: c.nudge_gate(-1, -1))
+        self._scoped("Right", dec, lambda: c.nudge_gate(1, 1))
+        self._scoped("Shift+Left", dec, lambda: c.nudge_gate(0, -1))
+        self._scoped("Shift+Right", dec, lambda: c.nudge_gate(0, 1))
+
+        # ...and from anywhere in the window, with Alt held.
+        QShortcut(QKeySequence("Alt+Left"), self, activated=lambda: c.nudge_gate(-1, -1))
+        QShortcut(QKeySequence("Alt+Right"), self, activated=lambda: c.nudge_gate(1, 1))
+        QShortcut(QKeySequence("Alt+Shift+Left"), self, activated=lambda: c.nudge_gate(0, -1))
+        QShortcut(QKeySequence("Alt+Shift+Right"), self, activated=lambda: c.nudge_gate(0, 1))
 
     def closeEvent(self, event) -> None:
         self.controller.stop_decode()   # never leave a QThread running at exit
@@ -281,6 +319,10 @@ class MainWindow(QMainWindow):
     def set_progress(self, done: int, total: int) -> None:
         self.progress.setRange(0, total)
         self.progress.setValue(done)
+
+    def set_probe(self, text: str) -> None:
+        """The hovered pixel's coordinates and counts (empty when off the image)."""
+        self.probe_label.setText(text)
 
     def set_loaded(self, loaded: bool) -> None:
         """Switch between the welcome screen and the workspace.

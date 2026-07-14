@@ -300,6 +300,9 @@ class LifetimePanel(QGroupBox):
 
 
 class PicksPanel(QGroupBox):
+    """Pixel inspection: hover to preview, click to lock, arrows to step, or type
+    exact coordinates. The list shows the locked/pinned picks and their counts."""
+
     def __init__(self):
         super().__init__("Per-pixel decay")
         self.avg = QSpinBox()
@@ -314,6 +317,23 @@ class PicksPanel(QGroupBox):
         self.fit = QCheckBox("exp fit")
         self.fit.setToolTip("Overlay a mono-exponential fit on each picked decay -- a smooth "
                             "visual guide through low-count noise; shows the apparent τ.")
+        self.hover = QCheckBox("hover")
+        self.hover.setChecked(True)
+        self.hover.setToolTip("Preview the decay of the pixel under the cursor as you move "
+                              "over the image (no click). Click to lock it in.")
+
+        # Exact coordinate entry -- a 512×512 image can't be clicked pixel-accurately.
+        self.row = QSpinBox()
+        self.col = QSpinBox()
+        for s in (self.row, self.col):
+            s.setRange(0, 0)
+            s.setMaximumWidth(66)
+            s.setToolTip("Jump to an exact pixel. Arrow keys step the selected pixel "
+                         "on the image (Shift = ×10).")
+        self.btn_go = QPushButton("Go")
+        self.btn_go.setMaximumWidth(44)
+        self.btn_go.setToolTip("Select the pixel at (row, col).")
+
         self.btn_pin = QPushButton("Pin")
         self.btn_pin.setToolTip("Freeze the current decay so the next click can be compared against it.")
         self.btn_clear = QPushButton("Clear")
@@ -322,7 +342,8 @@ class PicksPanel(QGroupBox):
         self.list.setMaximumHeight(76)
 
         lay = _col(self)
-        lay.addWidget(_muted("Click a pixel or drag a box on the image."))
+        lay.addWidget(_muted("Hover to preview · click to lock · drag a box for an ROI · "
+                             "arrows step (Shift ×10)."))
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(QLabel("avg N×N"))
@@ -330,18 +351,32 @@ class PicksPanel(QGroupBox):
         row.addSpacing(10)
         row.addWidget(QLabel("smooth"))
         row.addWidget(self.smooth)
-        row.addSpacing(10)
-        row.addWidget(self.fit)
         row.addStretch(1)
+        row.addWidget(self.fit)
+        row.addWidget(self.hover)
         lay.addLayout(row)
+        # The jump-to and the pin/clear actions share one row: the panel has to fit
+        # its column in the controls rack without a scrollbar.
+        self.btn_pin.setMaximumWidth(58)
+        self.btn_clear.setMaximumWidth(58)
+        go_row = QHBoxLayout()
+        go_row.setSpacing(6)
+        go_row.addWidget(QLabel("row"))
+        go_row.addWidget(self.row)
+        go_row.addWidget(QLabel("col"))
+        go_row.addWidget(self.col)
+        go_row.addWidget(self.btn_go)
+        go_row.addStretch(1)
+        go_row.addWidget(self.btn_pin)
+        go_row.addWidget(self.btn_clear)
+        lay.addLayout(go_row)
         lay.addWidget(self.list)
-        self.btn_pin.setMaximumWidth(70)
-        self.btn_clear.setMaximumWidth(70)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        btn_row.addWidget(self.btn_pin)
-        btn_row.addWidget(self.btn_clear)
-        lay.addLayout(btn_row)
+
+    def set_coords(self, r: int, c: int) -> None:
+        """Push the selected pixel into the row/col boxes (no signal)."""
+        with QSignalBlocker(self.row), QSignalBlocker(self.col):
+            self.row.setValue(int(r))
+            self.col.setValue(int(c))
 
     def set_items(self, items) -> None:
         self.list.clear()

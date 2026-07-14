@@ -32,6 +32,22 @@ in real time.
 
 ---
 
+## New in v0.6 — inspecting individual pixels
+
+A 512×512 image in a ~400 px panel means one screen pixel ≈ 1.3 data pixels, so
+clicking simply cannot land on a chosen pixel. Four ways to get at one properly:
+
+- **Hover probe:** move over the image and the status bar reads out that pixel's
+  coordinates and photons-in-gate *instantly*; stop for a moment and its decay is
+  drawn. Click to lock it in. (Sweeping is free — the plot is only repainted once
+  the cursor settles, so a fast pass over 500 pixels doesn't repaint 500 times.)
+- **Arrow-key pixel cursor:** with a pixel selected, the arrow keys step it one
+  pixel at a time (**Shift** = 10), with a crosshair marking it on the image.
+- **Go to (row, col):** type an exact pixel — precise and reproducible in a caption.
+- **Phasor lasso:** drag a loop around a cluster in the phasor plot and those
+  pixels are selected **by lifetime signature rather than by location** — tinted
+  magenta on the image (everything else veiled) with their pooled decay on the left.
+
 ## New in v0.5
 
 - **Phasor plot** (`P`): each pixel → `(g, s)` on the universal semicircle, a
@@ -79,8 +95,8 @@ in real time.
   PNG with an ns colorbar, and provenance recording both gates).
 - **Instant dragging** via a precomputed **prefix sum** along the microtime axis:
   each gate update is O(number of pixels), independent of gate width.
-- **Per-pixel & ROI decays:** **click** any pixel or **drag a box** on the image
-  to show that pixel/region's decay on the left panel. Each pick **replaces** the
+- **Per-pixel & ROI decays:** **hover** any pixel to preview its decay, **click**
+  to lock it in, or **drag a box** for an ROI. Each pick **replaces** the
   last — one decay at a time, not a cumulative overlay. Single-pixel decays are
   photon-starved, so the display is **smoothed** (a `smooth` time-bin window) and
   can be spatially averaged (an `avg` *N×N* box) for a clean curve. An **exp fit**
@@ -215,8 +231,13 @@ two-gate RLD map; the **Edit gate: A / B** radio (and the same ns boxes) then
 targets whichever gate you want to move.
 
 **Shortcuts:** `Ctrl+O` open · `Ctrl+E` export · `Ctrl+S/L` save/load settings ·
-`I`/`T` intensity/lifetime · `L` log-Y · `F` subtract floor · `C` clear picks ·
-`←`/`→` move the active gate, `Shift+←/→` resize it · `PgUp`/`PgDn` step z-slice.
+`I`/`T`/`P` intensity/lifetime/phasor · `L` log-Y · `F` subtract floor ·
+`C` clear picks · `PgUp`/`PgDn` step z-slice.
+
+The **arrow keys act on the plot you are working in**, so they never get swallowed
+by a spin box: on the **image** they step the selected pixel (`Shift` = 10 px at a
+time); on the **decay** they move the active gate (`Shift+←/→` resizes it). Hold
+`Alt` to drive the gate from anywhere in the window.
 
 ### One-click launcher (macOS)
 

@@ -458,6 +458,18 @@ class GatingModel:
             return np.zeros(self.n_bins, dtype=float)
         return region.mean(axis=(0, 1), dtype=np.float64)
 
+    def mask_decay(self, mask: np.ndarray) -> np.ndarray:
+        """Mean decay (counts/bin per pixel) over an arbitrary boolean pixel mask.
+
+        The mask counterpart of :meth:`pixel_decay`: it lets a population selected
+        by *property* rather than location -- e.g. a lasso around a phasor cluster
+        -- be pooled into one decay curve, in the same per-pixel units.
+        """
+        m = np.asarray(mask, dtype=bool)
+        if m.shape != self.intensity.shape or not m.any():
+            return np.zeros(self.n_bins, dtype=float)
+        return self._counts[m].mean(axis=0, dtype=np.float64)
+
     def rapid_lifetime(
         self,
         gate_a: tuple[int, int],
