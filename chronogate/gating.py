@@ -276,6 +276,47 @@ def phasor_semicircle(n: int = 200):
     return 0.5 + 0.5 * np.cos(theta), 0.5 * np.sin(theta)
 
 
+def phasor_reference(tau: float, period: float, harmonic: int = 1) -> tuple[float, float]:
+    """The exact semicircle position of a mono-exponential of lifetime ``tau``:
+    ``g = 1/(1+(ωτ)²)``, ``s = ωτ/(1+(ωτ)²)`` with ``ω = 2π·harmonic/period``.
+    ``tau`` and ``period`` just need the same unit (ns or bins)."""
+    w = 2.0 * np.pi * harmonic / float(period)
+    wt = w * float(tau)
+    d = 1.0 + wt * wt
+    return 1.0 / d, wt / d
+
+
+def phasor_calibration(g_measured: float, s_measured: float, tau_ref: float,
+                       period: float, harmonic: int = 1) -> tuple[float, float]:
+    """Rotation (rad) and modulation scale from a reference of known lifetime.
+
+    This is the standard way to make a phasor plot quantitative: the IRF/t0
+    offset multiplies every pixel's phasor by the *same* complex factor, so
+    measuring a dye of known ``tau_ref`` gives that factor directly::
+
+        C = Z_true / Z_measured      (Z = g + i·s)
+
+    Apply ``(arg C, |C|)`` to every pixel with
+    :func:`apply_phasor_calibration` and mono-exponentials land back on the
+    universal semicircle. Raises ``ValueError`` when the measured reference is
+    degenerate (zero or non-finite) -- there is nothing to calibrate against.
+    """
+    zt = complex(*phasor_reference(tau_ref, period, harmonic))
+    zm = complex(float(g_measured), float(s_measured))
+    if zm == 0 or not (np.isfinite(zm.real) and np.isfinite(zm.imag)):
+        raise ValueError("measured reference phasor is degenerate (0 or NaN)")
+    c = zt / zm
+    return float(np.angle(c)), float(abs(c))
+
+
+def apply_phasor_calibration(g, s, phi: float, mod: float):
+    """Rotate by ``phi`` and scale by ``mod`` -- per-pixel or scalar ``(g, s)``."""
+    g = np.asarray(g, dtype=np.float64)
+    s = np.asarray(s, dtype=np.float64)
+    cosp, sinp = np.cos(phi), np.sin(phi)
+    return mod * (g * cosp - s * sinp), mod * (g * sinp + s * cosp)
+
+
 def _moving_sum(a: np.ndarray, window: int, axis: int) -> np.ndarray:
     """Centered moving sum of size ``window`` along ``axis`` (edges clamped).
 

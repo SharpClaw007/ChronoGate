@@ -224,6 +224,12 @@ class MainWindow(QMainWindow):
         self.act_pixels.setShortcut(QKeySequence("Ctrl+P"))
         self.act_pixels.setToolTip("A ranked, filterable table of individual pixels")
 
+        self.act_phasor_cal = QAction("&Calibrate phasor from reference…", self)
+        self.act_phasor_cal.setToolTip(
+            "Make the phasor quantitative: map the median phasor of the current "
+            "selection (or the whole image) onto a known reference lifetime.")
+        self.act_phasor_cal_clear = QAction("Clear phasor calibration", self)
+
         self.act_about = QAction("&About ChronoGate", self)
         self.act_open.setToolTip("Open a .ptu file or stack layer")
         self.act_open_folder.setToolTip("Open a folder and load its .ptu stack")
@@ -246,6 +252,8 @@ class MainWindow(QMainWindow):
         m_view.addAction(self.act_intensity)
         m_view.addAction(self.act_lifetime)
         m_view.addAction(self.act_phasor)
+        m_view.addAction(self.act_phasor_cal)
+        m_view.addAction(self.act_phasor_cal_clear)
         m_view.addSeparator()
         m_view.addAction(self.act_pixels)
         m_view.addSeparator()
@@ -277,6 +285,8 @@ class MainWindow(QMainWindow):
         self.act_open_folder.triggered.connect(self.filep.btn_open_folder.click)
         self.act_export.triggered.connect(self.filep.btn_export.click)
         self.act_batch.triggered.connect(self.controller._on_batch_export)
+        self.act_phasor_cal.triggered.connect(self.controller._on_phasor_calibrate)
+        self.act_phasor_cal_clear.triggered.connect(self.controller.clear_phasor_calibration)
         self.act_save.triggered.connect(self.filep.btn_save.click)
         self.act_load.triggered.connect(self.filep.btn_load.click)
         self.act_quit.triggered.connect(self.close)
@@ -361,7 +371,8 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentWidget(self._workspace if loaded else self._welcome)
         for a in (self.act_export, self.act_batch, self.act_save, self.act_load,
                   self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log,
-                  self.act_floor, self.act_pixels):
+                  self.act_floor, self.act_pixels, self.act_phasor_cal,
+                  self.act_phasor_cal_clear):
             a.setEnabled(loaded)
         if not loaded:
             self.pixel_dock.hide()

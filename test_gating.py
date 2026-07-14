@@ -344,6 +344,59 @@ def test_metrics_rank_filters_and_sorts():
     print(f"OK: metric ranking filters/sorts/truncates ({len(metrics.metrics())} metrics registered).")
 
 
+def test_phasor_calibration_recovers_true_position():
+    """Reference-lifetime calibration: measuring a dye of known τ yields the
+    rotation/scale that undoes the IRF/t0 offset for every pixel."""
+    n = 1024
+    period_bins = float(n)
+    t = np.arange(n)
+    shift = 37.0                      # an uncorrected pulse offset, in bins
+
+    def cube_for(tau_bins):
+        decay = np.where(t >= shift, np.exp(-(t - shift) / tau_bins), 0.0)
+        return np.broadcast_to(decay, (2, 2, n)).astype(np.float64).copy()
+
+    w = 2 * np.pi / period_bins
+    tau_ref, tau_sample = 60.0, 150.0
+
+    # The exact semicircle position of a mono-exponential.
+    ge, se = gating.phasor_reference(tau_sample, period_bins)
+    assert abs(ge - 1 / (1 + (w * tau_sample) ** 2)) < 1e-12
+    assert abs(se - (w * tau_sample) / (1 + (w * tau_sample) ** 2)) < 1e-12
+
+    # Uncalibrated phasors (t0 = 0): the shift rotates both clouds off their spots.
+    g_ref, s_ref = gating.phasor(cube_for(tau_ref), period_bins)
+    g_smp, s_smp = gating.phasor(cube_for(tau_sample), period_bins)
+    assert abs(g_smp[0, 0] - ge) > 0.05, "the offset must actually displace the phasor"
+
+    # Calibrate on the reference; the factor is ~a pure rotation by ω·shift.
+    phi, mod = gating.phasor_calibration(g_ref[0, 0], s_ref[0, 0], tau_ref, period_bins)
+    assert abs(abs(phi) - w * shift) < 0.01 and abs(mod - 1.0) < 0.05
+
+    # The reference lands exactly on its own true position (by construction)...
+    gr, sr = gating.apply_phasor_calibration(g_ref[0, 0], s_ref[0, 0], phi, mod)
+    gre, sre = gating.phasor_reference(tau_ref, period_bins)
+    assert abs(gr - gre) < 1e-3 and abs(sr - sre) < 1e-3
+    # ...and the *sample* lands on its true spot too (the point of calibrating).
+    g2, s2 = gating.apply_phasor_calibration(g_smp, s_smp, phi, mod)
+    assert abs(g2[0, 0] - ge) < 0.02 and abs(s2[0, 0] - se) < 0.02
+    # back on the universal semicircle
+    assert abs((g2[0, 0] - 0.5) ** 2 + s2[0, 0] ** 2 - 0.25) < 0.02
+
+    # A perfect measurement needs no correction: identity calibration.
+    phi0, mod0 = gating.phasor_calibration(gre, sre, tau_ref, period_bins)
+    assert abs(phi0) < 1e-12 and abs(mod0 - 1.0) < 1e-12
+
+    # A degenerate measured reference is an error, not a NaN factory.
+    try:
+        gating.phasor_calibration(0.0, 0.0, tau_ref, period_bins)
+        raise AssertionError("degenerate reference must raise")
+    except ValueError:
+        pass
+    print(f"OK: reference calibration (φ={phi:+.3f} rad, m={mod:.3f}) restores "
+          f"true phasor positions.")
+
+
 def test_mask_stats_aggregates_selection():
     """Aggregate statistics (mean/median/std/valid-n) of metrics over a mask."""
     from chronogate import metrics
@@ -406,6 +459,7 @@ if __name__ == "__main__":
         test_phasor_mono_exponential_on_semicircle()
         test_mask_decay_pools_selected_pixels()
         test_metrics_rank_filters_and_sorts()
+        test_phasor_calibration_recovers_true_position()
         test_mask_stats_aggregates_selection()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

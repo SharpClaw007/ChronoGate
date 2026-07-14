@@ -960,6 +960,55 @@ def test_rld_gates_valid_at_load_and_mode_keyed() -> None:
     print("OK: gate B valid from load; τ gates follow the mode (A/B in lifetime, split elsewhere).")
 
 
+def test_phasor_calibration_ui() -> None:
+    """Calibrating from a reference makes the phasor quantitative: the maps, the
+    metrics and the plot all rotate/scale together, it survives a settings
+    round-trip, and clearing it restores the raw t0-referenced phasor."""
+    from chronogate import gating, metrics
+    w = _window()
+    c = w.controller
+    c._enter_mode("phasor")
+    assert "uncalibrated" in c.ic.ax.get_title(), c.ic.ax.get_title()
+
+    g0, s0 = (a.copy() for a in c._phasor_maps())
+    keep = np.isfinite(g0) & np.isfinite(s0)
+
+    assert c.calibrate_phasor(3.0), "calibration from the whole image must succeed"
+    assert c.phasor_cal is not None and c.phasor_cal["tau_ref_ns"] == 3.0
+    phi, mod = c.phasor_cal["phi"], c.phasor_cal["mod"]
+
+    # Every pixel is rotated/scaled by the calibration factor...
+    g1, s1 = c._phasor_maps()
+    ge, se = gating.apply_phasor_calibration(g0, s0, phi, mod)
+    assert np.allclose(g1[keep], ge[keep]) and np.allclose(s1[keep], se[keep])
+    # ...and the measured reference (the median of the raw cloud) lands exactly
+    # on the true semicircle position of a 3 ns mono-exponential.
+    period_ns = c.model.period_bins() * c.model.resolution_ns
+    gt, st = gating.phasor_reference(3.0, period_ns)
+    gm, sm = gating.apply_phasor_calibration(
+        float(np.median(g0[keep])), float(np.median(s0[keep])), phi, mod)
+    assert abs(float(gm) - gt) < 1e-9 and abs(float(sm) - st) < 1e-9
+    assert "calibrated" in c.ic.ax.get_title()
+
+    # The g/s pixel-list metrics see the calibrated values (one shared map).
+    assert np.allclose(metrics.get("g").compute(c._metric_ctx())[keep], g1[keep])
+
+    # Settings round-trip: the calibration is part of the analysis state.
+    s = c._settings()
+    c.clear_phasor_calibration()
+    assert c.phasor_cal is None
+    g_raw, _ = c._phasor_maps()
+    assert np.allclose(g_raw[keep], g0[keep]), "clearing restores the raw phasor"
+    c.apply_settings(s)
+    assert c.phasor_cal is not None and abs(c.phasor_cal["phi"] - phi) < 1e-12
+    g2, _ = c._phasor_maps()
+    assert np.allclose(g2[keep], g1[keep])
+
+    c.clear_phasor_calibration()
+    c._enter_mode("intensity")
+    print("OK: phasor calibration rotates maps+metrics+plot, persists, and clears.")
+
+
 def test_floor_slider_summed_range_and_scale() -> None:
     import math
     w = _window()
@@ -1023,6 +1072,7 @@ if __name__ == "__main__":
         test_compare_pinned_groups()
         test_selection_stats_in_stats_panel()
         test_rld_gates_valid_at_load_and_mode_keyed()
+        test_phasor_calibration_ui()
         test_floor_slider_summed_range_and_scale()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

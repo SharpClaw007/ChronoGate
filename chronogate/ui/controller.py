@@ -189,6 +189,10 @@ class ViewerController(QObject):
         self._lasso_verts = None
         self._phasor_key = None           # cache key for the (g, s) maps
         self._phasor_gs = None
+        # Reference-lifetime calibration: {"tau_ref_ns", "phi", "mod"} or None.
+        # Applied to every (g, s) map, so the plot, the lasso and the g/s metrics
+        # always agree on which space they live in.
+        self.phasor_cal: dict | None = None
 
         # Cached from the last intensity refresh, so a hover can restate the
         # readout without recomputing the whole gated image.
@@ -939,18 +943,76 @@ class ViewerController(QObject):
                 self._lasso = LassoSelector(self.ic.ax, onselect=self._on_phasor_lasso)
 
     def _phasor_maps(self):
-        """The per-pixel (g, s) maps, cached per (model, t0) -- the phasor is a full
-        Fourier pass over the cube, far too costly to redo on every lasso.
+        """The per-pixel (g, s) maps -- **calibrated** when a reference calibration
+        is set -- cached per (model, t0, calibration): the phasor is a full Fourier
+        pass over the cube, far too costly to redo on every lasso.
 
         The model is held **weakly**, so swapping z/channel/binning drops the cache
         (a dead weakref can never compare equal to the live model) without this
         cache pinning a whole photon cube in memory.
         """
+        cal = ((self.phasor_cal["phi"], self.phasor_cal["mod"])
+               if self.phasor_cal else None)
         key = self._phasor_key
-        if key is None or key[0]() is not self.model or key[1] != self.model.t0_bin:
-            self._phasor_key = (weakref.ref(self.model), self.model.t0_bin)
-            self._phasor_gs = self.model.phasor()
+        if (key is None or key[0]() is not self.model
+                or key[1] != self.model.t0_bin or key[2] != cal):
+            self._phasor_key = (weakref.ref(self.model), self.model.t0_bin, cal)
+            g, s = self.model.phasor()
+            if cal is not None:
+                g, s = gating.apply_phasor_calibration(g, s, *cal)
+            self._phasor_gs = (g, s)
         return self._phasor_gs
+
+    # -------------------------------------------------------- phasor calibration
+    def calibrate_phasor(self, tau_ref_ns: float) -> bool:
+        """Calibrate the phasor against the current view of a reference dye.
+
+        The measured reference is the median **raw** (g, s) of the selected
+        pixels -- or of every finite pixel above the threshold when nothing is
+        selected -- mapped onto the semicircle position of ``tau_ref_ns``. Using
+        the raw maps means recalibrating replaces the correction instead of
+        compounding it.
+        """
+        if self.model is None:
+            return False
+        g, s = self.model.phasor()      # raw, uncalibrated
+        keep = np.isfinite(g) & np.isfinite(s)
+        if self.threshold > 0:
+            keep &= self.model.intensity >= self.threshold
+        if self.select_mask is not None and self.select_mask.shape == keep.shape:
+            keep &= self.select_mask
+        if not keep.any():
+            self.statusMessage.emit("Phasor calibration: no usable pixels "
+                                    "(selection empty or everything below threshold).")
+            return False
+        period_ns = self.model.period_bins() * self.model.resolution_ns
+        try:
+            phi, mod = gating.phasor_calibration(
+                float(np.median(g[keep])), float(np.median(s[keep])),
+                float(tau_ref_ns), period_ns)
+        except ValueError as exc:
+            self.statusMessage.emit(f"Phasor calibration failed: {exc}")
+            return False
+        self.phasor_cal = {"tau_ref_ns": float(tau_ref_ns), "phi": phi, "mod": mod}
+        self._after_phasor_cal_change()
+        self.statusMessage.emit(
+            f"Phasor calibrated: τref {tau_ref_ns:g} ns from {int(keep.sum()):,} px "
+            f"(rotation {np.degrees(phi):+.1f}°, modulation ×{mod:.3f}).")
+        return True
+
+    def clear_phasor_calibration(self) -> None:
+        if self.phasor_cal is None:
+            return
+        self.phasor_cal = None
+        self._after_phasor_cal_change()
+        self.statusMessage.emit("Phasor calibration cleared (raw t0-referenced phasor).")
+
+    def _after_phasor_cal_change(self) -> None:
+        """The (g, s) space moved: refresh everything that lives in it."""
+        self._pixel_key = None           # g/s filter bounds are on the old scale
+        if self.w is not None:
+            self._refresh_image()        # phasor plot, or the pixel list re-rank
+            self.refresh_pixel_list()
 
     def _lasso_mask(self, verts) -> np.ndarray:
         """Which pixels fall inside a polygon drawn on the phasor plot."""
@@ -963,6 +1025,23 @@ class ViewerController(QObject):
         if self.threshold > 0:
             mask &= (self.model.intensity >= self.threshold)
         return mask
+
+    def _on_phasor_calibrate(self) -> None:
+        """Menu entry: ask for the reference lifetime, then calibrate."""
+        if self.model is None:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        n_sel = (int(self.select_mask.sum())
+                 if self.select_mask is not None else 0)
+        src = (f"the {n_sel:,} selected px" if n_sel
+               else "every pixel above the threshold")
+        tau, ok = QInputDialog.getDouble(
+            self.w, "Calibrate phasor",
+            f"Known lifetime τ (ns) of the reference in view\n"
+            f"(measured as the median phasor of {src}):",
+            4.0, 0.001, 10_000.0, 3)
+        if ok:
+            self.calibrate_phasor(tau)
 
     def _on_phasor_lasso(self, verts) -> None:
         """Pixels inside the drawn polygon become a selection: highlighted on the
@@ -1010,7 +1089,9 @@ class ViewerController(QObject):
         ax.set_xlim(-0.05, 1.05)
         ax.set_ylim(-0.02, 0.62)
         ax.set_aspect("equal")
-        ax.set_title(f"phasor  ·  {g.size:,} px  ·  harmonic 1{sel}\n"
+        cal = (f"calibrated (τref {self.phasor_cal['tau_ref_ns']:g} ns)"
+               if self.phasor_cal else "uncalibrated")
+        ax.set_title(f"phasor  ·  {g.size:,} px  ·  harmonic 1  ·  {cal}{sel}\n"
                      f"drag a lasso around a cluster to select those pixels", fontsize=9)
         self.ic.draw_idle()
         if self.w is not None:
@@ -2175,6 +2256,7 @@ class ViewerController(QObject):
             "lifetime_cmap": self.lifetime_cmap, "rld_min_counts": self.rld_min_counts,
             "hsv_lifetime": self.hsv_lifetime, "combine": self.combine,
             "hover_probe": self.hover_probe,
+            "phasor_cal": self.phasor_cal,
             "pixel_list": self._pixel_list_settings(),
             "picks": [self._pick_recipe(p) for p in self.picks],
             "pinned_picks": [self._pick_recipe(p) for p in self.pinned_picks],
@@ -2535,6 +2617,13 @@ class ViewerController(QObject):
         mode = s.get("mode", self.mode)
         mode = mode if mode in ("lifetime", "phasor") else "intensity"
         self.edit_target = "B" if (mode == "lifetime" and s.get("edit_target") == "B") else "A"
+
+        # The calibration before the picks: a saved lasso polygon lives in the
+        # calibrated (g, s) space, so it must be re-cut under the same calibration.
+        pc = s.get("phasor_cal")
+        self.phasor_cal = ({"tau_ref_ns": float(pc["tau_ref_ns"]),
+                            "phi": float(pc["phi"]), "mod": float(pc["mod"])}
+                           if pc else None)
 
         # The selection last, so a lasso is re-cut against the restored threshold,
         # gate and binning -- exactly the state it was drawn under.
