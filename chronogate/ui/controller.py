@@ -196,10 +196,12 @@ class ViewerController(QObject):
         self._lasso_verts = None
         self._phasor_key = None           # cache key for the (g, s) maps
         self._phasor_gs = None
-        # Reference-lifetime calibration: {"tau_ref_ns", "phi", "mod"} or None.
-        # Applied to every (g, s) map, so the plot, the lasso and the g/s metrics
+        # Phasor harmonic (1 or 2) and per-harmonic reference calibrations
+        # ({harmonic: {"tau_ref_ns", "phi", "mod"}}). The active calibration is
+        # applied to every (g, s) map, so the plot, the lasso and the g/s metrics
         # always agree on which space they live in.
-        self.phasor_cal: dict | None = None
+        self.harmonic = 1
+        self.phasor_cals: dict[int, dict] = {}
 
         # The RLD τ map, cached per analysis state; the pick legend, the pixel
         # list and the selection stats all read this one map (see _tau_map).
@@ -506,7 +508,8 @@ class ViewerController(QObject):
                    w.picks.hover,
                    w.binning.bin, w.binning.target, w.filep.z, w.filep.channel, w.filep.combine,
                    w.lifetime.hsv,
-                   w.act_intensity, w.act_lifetime, w.act_phasor, w.act_log, w.act_floor, w.display.lock]
+                   w.act_intensity, w.act_lifetime, w.act_phasor, w.act_harmonic2,
+                   w.act_log, w.act_floor, w.display.lock]
         with _blocked(*widgets):
             w.gate.spin_lo.setValue(lo_ns)
             w.gate.spin_hi.setValue(hi_ns)
@@ -535,6 +538,7 @@ class ViewerController(QObject):
             w.act_intensity.setChecked(self.mode == "intensity")
             w.act_lifetime.setChecked(self.mode == "lifetime")
             w.act_phasor.setChecked(self.mode == "phasor")
+            w.act_harmonic2.setChecked(self.harmonic == 2)
             w.act_log.setChecked(self.log_scale)
             w.act_floor.setChecked(self.apply_floor)
         w.gate.set_active_label(self.edit_target, self.mode)
@@ -956,10 +960,17 @@ class ViewerController(QObject):
             except TypeError:      # older matplotlib without `props`
                 self._lasso = LassoSelector(self.ic.ax, onselect=self._on_phasor_lasso)
 
+    @property
+    def phasor_cal(self) -> dict | None:
+        """The calibration for the *current* harmonic (each harmonic has its own --
+        the same reference measurement yields a different factor per ω)."""
+        return self.phasor_cals.get(self.harmonic)
+
     def _phasor_maps(self):
-        """The per-pixel (g, s) maps -- **calibrated** when a reference calibration
-        is set -- cached per (model, t0, calibration): the phasor is a full Fourier
-        pass over the cube, far too costly to redo on every lasso.
+        """The per-pixel (g, s) maps at the current harmonic -- **calibrated** when
+        a reference calibration is set -- cached per (model, t0, harmonic,
+        calibration): the phasor is a full Fourier pass over the cube, far too
+        costly to redo on every lasso.
 
         The model is held **weakly**, so swapping z/channel/binning drops the cache
         (a dead weakref can never compare equal to the live model) without this
@@ -969,9 +980,10 @@ class ViewerController(QObject):
                if self.phasor_cal else None)
         key = self._phasor_key
         if (key is None or key[0]() is not self.model
-                or key[1] != self.model.t0_bin or key[2] != cal):
-            self._phasor_key = (weakref.ref(self.model), self.model.t0_bin, cal)
-            g, s = self.model.phasor()
+                or key[1:] != (self.model.t0_bin, self.harmonic, cal)):
+            self._phasor_key = (weakref.ref(self.model), self.model.t0_bin,
+                                self.harmonic, cal)
+            g, s = self.model.phasor(harmonic=self.harmonic)
             if cal is not None:
                 g, s = gating.apply_phasor_calibration(g, s, *cal)
             self._phasor_gs = (g, s)
@@ -989,7 +1001,7 @@ class ViewerController(QObject):
         """
         if self.model is None:
             return False
-        g, s = self.model.phasor()      # raw, uncalibrated
+        g, s = self.model.phasor(harmonic=self.harmonic)   # raw, uncalibrated
         keep = np.isfinite(g) & np.isfinite(s)
         if self.threshold > 0:
             keep &= self.model.intensity >= self.threshold
@@ -1003,23 +1015,36 @@ class ViewerController(QObject):
         try:
             phi, mod = gating.phasor_calibration(
                 float(np.median(g[keep])), float(np.median(s[keep])),
-                float(tau_ref_ns), period_ns)
+                float(tau_ref_ns), period_ns, harmonic=self.harmonic)
         except ValueError as exc:
             self.statusMessage.emit(f"Phasor calibration failed: {exc}")
             return False
-        self.phasor_cal = {"tau_ref_ns": float(tau_ref_ns), "phi": phi, "mod": mod}
+        self.phasor_cals[self.harmonic] = {"tau_ref_ns": float(tau_ref_ns),
+                                           "phi": phi, "mod": mod}
         self._after_phasor_cal_change()
         self.statusMessage.emit(
-            f"Phasor calibrated: τref {tau_ref_ns:g} ns from {int(keep.sum()):,} px "
+            f"Phasor calibrated (harmonic {self.harmonic}): τref {tau_ref_ns:g} ns "
+            f"from {int(keep.sum()):,} px "
             f"(rotation {np.degrees(phi):+.1f}°, modulation ×{mod:.3f}).")
         return True
 
     def clear_phasor_calibration(self) -> None:
         if self.phasor_cal is None:
             return
-        self.phasor_cal = None
+        self.phasor_cals.pop(self.harmonic, None)
         self._after_phasor_cal_change()
-        self.statusMessage.emit("Phasor calibration cleared (raw t0-referenced phasor).")
+        self.statusMessage.emit(
+            f"Phasor calibration cleared for harmonic {self.harmonic} "
+            f"(raw t0-referenced phasor).")
+
+    def _on_harmonic2(self, checked) -> None:
+        """View ▸ Phasor 2nd harmonic. A different ω is a different (g, s) space,
+        so this invalidates exactly what a calibration change does."""
+        self.harmonic = 2 if checked else 1
+        self._after_phasor_cal_change()
+        cal = (f"calibrated (τref {self.phasor_cal['tau_ref_ns']:g} ns)"
+               if self.phasor_cal else "uncalibrated")
+        self.statusMessage.emit(f"Phasor harmonic {self.harmonic} — {cal}.")
 
     def _after_phasor_cal_change(self) -> None:
         """The (g, s) space moved: refresh everything that lives in it."""
@@ -1087,7 +1112,7 @@ class ViewerController(QObject):
         """
         period_ns = self.model.period_bins() * self.model.resolution_ns
         tau_ref = self.phasor_cal["tau_ref_ns"]
-        gr, sr = gating.phasor_reference(tau_ref, period_ns)
+        gr, sr = gating.phasor_reference(tau_ref, period_ns, self.harmonic)
         (mark,) = ax.plot([gr], [sr], marker="P", ms=9, mew=1.2, mec="white",
                           color=theme.ACCENT, linestyle="none", zorder=8)
         mark.set_gid("tau_ref_marker")
@@ -1098,7 +1123,7 @@ class ViewerController(QObject):
 
         # Nice τ ticks spanning the sweep of the semicircle for this rep rate.
         ticks = [t for t in (0.5, 1.0, 2.0, 4.0, 8.0, 16.0) if t < period_ns]
-        pts = [gating.phasor_reference(t, period_ns) for t in ticks]
+        pts = [gating.phasor_reference(t, period_ns, self.harmonic) for t in ticks]
         (ruler,) = ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o",
                            ms=3.5, color=theme.MUTED, linestyle="none", zorder=7)
         ruler.set_gid("tau_ruler")
@@ -1140,7 +1165,7 @@ class ViewerController(QObject):
         ax.set_aspect("equal")
         cal = (f"calibrated (τref {self.phasor_cal['tau_ref_ns']:g} ns)"
                if self.phasor_cal else "uncalibrated")
-        ax.set_title(f"phasor  ·  {g.size:,} px  ·  harmonic 1  ·  {cal}{sel}\n"
+        ax.set_title(f"phasor  ·  {g.size:,} px  ·  harmonic {self.harmonic}  ·  {cal}{sel}\n"
                      f"drag a lasso around a cluster to select those pixels", fontsize=9)
         self.ic.draw_idle()
         if self.w is not None:
@@ -2323,7 +2348,8 @@ class ViewerController(QObject):
             "lifetime_cmap": self.lifetime_cmap, "rld_min_counts": self.rld_min_counts,
             "hsv_lifetime": self.hsv_lifetime, "combine": self.combine,
             "hover_probe": self.hover_probe,
-            "phasor_cal": self.phasor_cal,
+            "harmonic": self.harmonic,
+            "phasor_cals": dict(self.phasor_cals),
             "pixel_list": self._pixel_list_settings(),
             "picks": [self._pick_recipe(p) for p in self.picks],
             "pinned_picks": [self._pick_recipe(p) for p in self.pinned_picks],
@@ -2687,12 +2713,15 @@ class ViewerController(QObject):
         mode = mode if mode in ("lifetime", "phasor") else "intensity"
         self.edit_target = "B" if (mode == "lifetime" and s.get("edit_target") == "B") else "A"
 
-        # The calibration before the picks: a saved lasso polygon lives in the
-        # calibrated (g, s) space, so it must be re-cut under the same calibration.
-        pc = s.get("phasor_cal")
-        self.phasor_cal = ({"tau_ref_ns": float(pc["tau_ref_ns"]),
-                            "phi": float(pc["phi"]), "mod": float(pc["mod"])}
-                           if pc else None)
+        # Harmonic and calibrations before the picks: a saved lasso polygon lives
+        # in that harmonic's calibrated (g, s) space, so it must be re-cut there.
+        self.harmonic = 2 if int(s.get("harmonic", self.harmonic)) == 2 else 1
+        cals = s.get("phasor_cals")
+        if not cals and s.get("phasor_cal"):      # v0.9 single-harmonic settings
+            cals = {1: s["phasor_cal"]}
+        self.phasor_cals = {int(h): {"tau_ref_ns": float(d["tau_ref_ns"]),
+                                     "phi": float(d["phi"]), "mod": float(d["mod"])}
+                            for h, d in (cals or {}).items() if d}
 
         # The selection last, so a lasso is re-cut against the restored threshold,
         # gate and binning -- exactly the state it was drawn under.

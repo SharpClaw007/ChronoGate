@@ -1044,6 +1044,50 @@ def test_phasor_grid_under_hexbin() -> None:
     print("OK: phasor gridlines render under the hexbin.")
 
 
+def test_second_harmonic_ui() -> None:
+    """View ▸ Phasor 2nd harmonic: the maps, title and calibration all follow the
+    harmonic, and each harmonic keeps its own calibration."""
+    w = _window()
+    c = w.controller
+    c._enter_mode("phasor")
+    assert c.harmonic == 1 and "harmonic 1" in c.ic.ax.get_title()
+    g1, s1 = (a.copy() for a in c._phasor_maps())
+
+    w.act_harmonic2.trigger()
+    assert c.harmonic == 2 and "harmonic 2" in c.ic.ax.get_title()
+    g2, s2 = c._phasor_maps()
+    keep = np.isfinite(g1) & np.isfinite(g2)
+    assert not np.allclose(g2[keep], g1[keep]), "harmonic 2 is a different map"
+    gd, sd = c.model.phasor(harmonic=2)
+    assert np.allclose(g2[keep], gd[keep]) and np.allclose(s2[keep], sd[keep])
+
+    # Calibrate at harmonic 2; harmonic 1 stays uncalibrated.
+    assert c.calibrate_phasor(3.0)
+    assert c.phasor_cal is not None and 2 in c.phasor_cals
+    w.act_harmonic2.trigger()            # back to harmonic 1
+    assert c.harmonic == 1 and c.phasor_cal is None
+    assert "uncalibrated" in c.ic.ax.get_title()
+
+    # Settings round-trip restores the harmonic and its calibration.
+    w.act_harmonic2.trigger()            # harmonic 2 again (calibrated)
+    s = c._settings()
+    assert s["harmonic"] == 2 and s["phasor_cals"].get(2)
+    c.clear_phasor_calibration()
+    w.act_harmonic2.trigger()            # wipe: harmonic 1, no calibrations
+    c.apply_settings(s)
+    assert c.harmonic == 2 and c.phasor_cal is not None
+    assert c.phasor_cal["tau_ref_ns"] == 3.0
+
+    # Legacy settings (v0.9 single phasor_cal) land on harmonic 1.
+    c.apply_settings({**s, "harmonic": 1, "phasor_cals": None,
+                      "phasor_cal": {"tau_ref_ns": 2.0, "phi": 0.1, "mod": 0.9}})
+    assert c.harmonic == 1 and c.phasor_cal["tau_ref_ns"] == 2.0
+
+    c.clear_phasor_calibration()
+    c._enter_mode("intensity")
+    print("OK: second harmonic toggles maps/title, keeps per-harmonic calibration, persists.")
+
+
 def test_phasor_reference_marker_and_ruler() -> None:
     """A calibrated phasor shows WHERE the reference should sit (and a τ ruler
     along the semicircle), so the calibration is visibly verifiable."""
@@ -1195,6 +1239,7 @@ if __name__ == "__main__":
         test_tau_map_shared_cache()
         test_phasor_grid_under_hexbin()
         test_phasor_reference_marker_and_ruler()
+        test_second_harmonic_ui()
         test_phasor_calibration_ui()
         test_floor_slider_summed_range_and_scale()
     except AssertionError as exc:

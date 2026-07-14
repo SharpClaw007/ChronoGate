@@ -229,6 +229,11 @@ class MainWindow(QMainWindow):
             "Make the phasor quantitative: map the median phasor of the current "
             "selection (or the whole image) onto a known reference lifetime.")
         self.act_phasor_cal_clear = QAction("Clear phasor calibration", self)
+        self.act_harmonic2 = QAction("Phasor 2nd &harmonic", self, checkable=True)
+        self.act_harmonic2.setToolTip(
+            "Compute the phasor at twice the laser frequency (ω₂ = 2ω): spreads "
+            "short lifetimes apart and helps disambiguate multi-component mixtures. "
+            "Each harmonic keeps its own reference calibration.")
 
         self.act_about = QAction("&About ChronoGate", self)
         self.act_open.setToolTip("Open a .ptu file or stack layer")
@@ -252,6 +257,7 @@ class MainWindow(QMainWindow):
         m_view.addAction(self.act_intensity)
         m_view.addAction(self.act_lifetime)
         m_view.addAction(self.act_phasor)
+        m_view.addAction(self.act_harmonic2)
         m_view.addAction(self.act_phasor_cal)
         m_view.addAction(self.act_phasor_cal_clear)
         m_view.addSeparator()
@@ -287,6 +293,7 @@ class MainWindow(QMainWindow):
         self.act_batch.triggered.connect(self.controller._on_batch_export)
         self.act_phasor_cal.triggered.connect(self.controller._on_phasor_calibrate)
         self.act_phasor_cal_clear.triggered.connect(self.controller.clear_phasor_calibration)
+        self.act_harmonic2.toggled.connect(self.controller._on_harmonic2)
         self.act_save.triggered.connect(self.filep.btn_save.click)
         self.act_load.triggered.connect(self.filep.btn_load.click)
         self.act_quit.triggered.connect(self.close)
@@ -372,7 +379,7 @@ class MainWindow(QMainWindow):
         for a in (self.act_export, self.act_batch, self.act_save, self.act_load,
                   self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log,
                   self.act_floor, self.act_pixels, self.act_phasor_cal,
-                  self.act_phasor_cal_clear):
+                  self.act_phasor_cal_clear, self.act_harmonic2):
             a.setEnabled(loaded)
         if not loaded:
             self.pixel_dock.hide()

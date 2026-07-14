@@ -397,6 +397,31 @@ def test_phasor_calibration_recovers_true_position():
           f"true phasor positions.")
 
 
+def test_phasor_second_harmonic():
+    """The second harmonic doubles ω: shorter lifetimes spread out, and the
+    reference/calibration helpers must follow the same ω."""
+    n, period_bins, tau_bins = 256, 256.0, 40.0
+    t = np.arange(n)
+    counts = np.broadcast_to(np.exp(-t / tau_bins), (2, 2, n)).astype(np.float64).copy()
+
+    g2, s2 = gating.phasor(counts, period_bins, harmonic=2)
+    w2 = 2 * np.pi * 2 / period_bins
+    ge = 1 / (1 + (w2 * tau_bins) ** 2)
+    se = (w2 * tau_bins) / (1 + (w2 * tau_bins) ** 2)
+    assert abs(g2[0, 0] - ge) < 0.03 and abs(s2[0, 0] - se) < 0.03, (g2[0, 0], s2[0, 0])
+
+    # phasor_reference at harmonic 2 is that exact position...
+    gr, sr = gating.phasor_reference(tau_bins, period_bins, harmonic=2)
+    assert abs(gr - ge) < 1e-12 and abs(sr - se) < 1e-12
+    # ...and a perfect harmonic-2 measurement calibrates to identity.
+    phi, mod = gating.phasor_calibration(gr, sr, tau_bins, period_bins, harmonic=2)
+    assert abs(phi) < 1e-12 and abs(mod - 1.0) < 1e-12
+    # harmonic 1 and 2 genuinely differ for the same decay.
+    g1, _ = gating.phasor(counts, period_bins, harmonic=1)
+    assert abs(g1[0, 0] - g2[0, 0]) > 0.05
+    print(f"OK: harmonic 2 phasor lands at its ω₂ position (g={g2[0,0]:.3f}).")
+
+
 def test_mask_stats_aggregates_selection():
     """Aggregate statistics (mean/median/std/valid-n) of metrics over a mask."""
     from chronogate import metrics
@@ -460,6 +485,7 @@ if __name__ == "__main__":
         test_mask_decay_pools_selected_pixels()
         test_metrics_rank_filters_and_sorts()
         test_phasor_calibration_recovers_true_position()
+        test_phasor_second_harmonic()
         test_mask_stats_aggregates_selection()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
