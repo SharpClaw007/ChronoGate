@@ -1044,6 +1044,41 @@ def test_phasor_grid_under_hexbin() -> None:
     print("OK: phasor gridlines render under the hexbin.")
 
 
+def test_phasor_reference_marker_and_ruler() -> None:
+    """A calibrated phasor shows WHERE the reference should sit (and a τ ruler
+    along the semicircle), so the calibration is visibly verifiable."""
+    from chronogate import gating
+    w = _window()
+    c = w.controller
+    c._enter_mode("phasor")
+
+    def gids():
+        return {a.get_gid() for a in c._phasor_artists}
+
+    # Uncalibrated: τ positions on the plot would be meaningless -- no marker.
+    assert "tau_ref_marker" not in gids() and "tau_ruler" not in gids()
+
+    assert c.calibrate_phasor(3.0)
+    assert "tau_ref_marker" in gids(), "the reference point is marked"
+    assert "tau_ruler" in gids(), "the semicircle carries a τ ruler"
+    marker = next(a for a in c._phasor_artists if a.get_gid() == "tau_ref_marker")
+    period_ns = c.model.period_bins() * c.model.resolution_ns
+    gt, st = gating.phasor_reference(3.0, period_ns)
+    x, y = marker.get_data()
+    assert abs(float(x[0]) - gt) < 1e-9 and abs(float(y[0]) - st) < 1e-9, \
+        "the marker sits exactly on the τref semicircle position"
+    ruler = next(a for a in c._phasor_artists if a.get_gid() == "tau_ruler")
+    rx, ry = ruler.get_data()
+    assert len(rx) >= 3, "several τ ticks"
+    assert np.allclose((np.asarray(rx) - 0.5) ** 2 + np.asarray(ry) ** 2, 0.25,
+                       atol=1e-9), "ruler ticks sit on the universal semicircle"
+
+    c.clear_phasor_calibration()
+    assert "tau_ref_marker" not in gids() and "tau_ruler" not in gids()
+    c._enter_mode("intensity")
+    print("OK: calibrated phasor marks the reference point and a τ ruler; clears cleanly.")
+
+
 def test_phasor_calibration_ui() -> None:
     """Calibrating from a reference makes the phasor quantitative: the maps, the
     metrics and the plot all rotate/scale together, it survives a settings
@@ -1159,6 +1194,7 @@ if __name__ == "__main__":
         test_rld_gates_valid_at_load_and_mode_keyed()
         test_tau_map_shared_cache()
         test_phasor_grid_under_hexbin()
+        test_phasor_reference_marker_and_ruler()
         test_phasor_calibration_ui()
         test_floor_slider_summed_range_and_scale()
     except AssertionError as exc:

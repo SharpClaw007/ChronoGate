@@ -1078,6 +1078,39 @@ class ViewerController(QObject):
             f"Phasor lasso: {n:,} px ({100 * n / self.model.n_pixels:.1f}%) — their pooled decay is "
             f"on the left; press I for the intensity image to see them highlighted.")
 
+    def _draw_phasor_ruler(self, ax) -> None:
+        """The τref marker and a τ ruler along the semicircle.
+
+        Only drawn when calibrated -- on a raw t0-referenced phasor these
+        positions would be meaningless. This is what makes a calibration
+        visibly verifiable: the reference cloud must sit on its cross.
+        """
+        period_ns = self.model.period_bins() * self.model.resolution_ns
+        tau_ref = self.phasor_cal["tau_ref_ns"]
+        gr, sr = gating.phasor_reference(tau_ref, period_ns)
+        (mark,) = ax.plot([gr], [sr], marker="P", ms=9, mew=1.2, mec="white",
+                          color=theme.ACCENT, linestyle="none", zorder=8)
+        mark.set_gid("tau_ref_marker")
+        self._phasor_artists.append(mark)
+        txt = ax.annotate(f"τref {tau_ref:g} ns", (gr, sr), textcoords="offset points",
+                          xytext=(6, 8), fontsize=7, color=theme.ACCENT, zorder=8)
+        self._phasor_artists.append(txt)
+
+        # Nice τ ticks spanning the sweep of the semicircle for this rep rate.
+        ticks = [t for t in (0.5, 1.0, 2.0, 4.0, 8.0, 16.0) if t < period_ns]
+        pts = [gating.phasor_reference(t, period_ns) for t in ticks]
+        (ruler,) = ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o",
+                           ms=3.5, color=theme.MUTED, linestyle="none", zorder=7)
+        ruler.set_gid("tau_ruler")
+        self._phasor_artists.append(ruler)
+        for t, (g, s) in zip(ticks, pts):
+            # Labels pushed radially outward from the circle centre (0.5, 0).
+            lab = ax.annotate(f"{t:g}", (g, s), textcoords="offset points",
+                              xytext=(10 * (g - 0.5) / 0.5, 10 * s / 0.5 + 2),
+                              fontsize=6, color=theme.MUTED,
+                              ha="center", va="center", zorder=7)
+            self._phasor_artists.append(lab)
+
     def _refresh_phasor_image(self) -> None:
         ax = self.ic.ax
         self._remove_tau_hist()
@@ -1094,6 +1127,8 @@ class ViewerController(QObject):
         gc, sc = gating.phasor_semicircle()
         (ln,) = ax.plot(gc, sc, color=theme.MUTED, lw=1.3, zorder=6)
         self._phasor_artists.append(ln)
+        if self.phasor_cal is not None:
+            self._draw_phasor_ruler(ax)
         sel = ""
         if self.select_mask is not None and self._lasso_verts is not None:
             v = np.vstack([self._lasso_verts, self._lasso_verts[:1]])   # close the loop
