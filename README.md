@@ -64,16 +64,33 @@ clicking simply cannot land on a chosen pixel. Five ways to get at one properly:
   pixels are selected **by lifetime signature rather than by location** — tinted
   magenta on the image (everything else veiled) with their pooled decay on the left.
 
+### Selections export
+
+A selection is the *result* of an analysis, so it leaves with the export. Whatever
+is picked — a pixel, an ROI, a phasor cluster, a pixel-list group, plus anything
+pinned — adds three files alongside the usual four:
+
+- `<base>_selection_mask.tif` — a **label map**: `0` unselected, `k` for the k-th
+  selection. Re-usable as a mask in ImageJ or numpy.
+- `<base>_selection_decay.csv` — each selection's **pooled decay** (counts/bin per pixel).
+- `<base>_selection_pixels.csv` — **one row per selected pixel**, with every metric
+  (in-gate, total, τ, phasor g/s). This is the table you run statistics on.
+
+The provenance JSON records what each label was and how many pixels it held.
+**Save settings** persists the selection too — a phasor lasso is stored as its
+*polygon*, so a 160,000-pixel selection round-trips through a few vertices and is
+re-cut exactly against the restored gate, threshold and binning.
+
 ### Adding a pixel metric
 
 The pixel list's columns, sort keys and filters all come from the registry in
 `chronogate/metrics.py`. A new quantity is **one function** — no changes to the
-panel, the controller, or the table:
+panel, the controller, or the table, and it appears in the exported pixel table too:
 
 ```python
 @register("peak_bin", "peak bin", fmt="{:.0f}")
 def _peak_bin(ctx):
-    return ctx.model._counts.argmax(axis=-1).astype(float)   # (Y, X), NaN where undefined
+    return ctx.model.counts.argmax(axis=-1).astype(float)   # (Y, X), NaN where undefined
 ```
 
 ## New in v0.5

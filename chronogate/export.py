@@ -21,12 +21,73 @@ exactly restartable.
 
 from __future__ import annotations
 
+import csv
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import tifffile
+
+
+@dataclass
+class Selection:
+    """The pixels the user has selected, in a form that can leave the program.
+
+    A selection (a picked pixel, an ROI, a phasor-lasso cluster, or a multi-select
+    in the pixel list) is the *result* of an analysis, so it has to be exportable
+    or the feature is a dead end. Three artefacts:
+
+    * a **label map** -- 0 where unselected, *k* for the k-th selection, so the
+      regions can be re-used as masks in ImageJ/Python;
+    * the **pooled decay** of each selection, in counts/bin per pixel;
+    * a **pixel table** -- one row per selected pixel with every registered metric,
+      which is what actually goes into a statistics package.
+    """
+
+    labels: list[str]                                  # label k is labels[k - 1]
+    label_map: np.ndarray                              # (Y, X) uint8/uint16
+    time_ns: np.ndarray
+    decays: list[np.ndarray]                           # per label, (H,)
+    pixel_columns: list[str]                           # e.g. row, col, in_gate, tau...
+    pixel_blocks: list[np.ndarray] = field(default_factory=list)   # per label, (N, C)
+
+    def counts(self) -> list[int]:
+        return [int(b.shape[0]) for b in self.pixel_blocks]
+
+
+def _write_selection_mask(path: Path, sel: Selection, metadata: dict[str, Any]) -> None:
+    """The label map: 0 = unselected, k = the k-th selection."""
+    m = sel.label_map
+    out = m.astype(np.uint8) if int(m.max(initial=0)) <= 255 else m.astype(np.uint16)
+    tifffile.imwrite(str(path), out, photometric="minisblack",
+                     description=json.dumps(metadata, default=str))
+
+
+def _write_selection_decay_csv(path: Path, sel: Selection) -> None:
+    """One column per selection: its pooled decay, in counts/bin per pixel.
+
+    Written through ``csv`` rather than ``np.savetxt`` because the column headers
+    are user-facing labels that legitimately contain commas ("phasor sel (22,575
+    px)") -- they need quoting, not mangling.
+    """
+    table = np.column_stack([sel.time_ns] + [np.asarray(d, float) for d in sel.decays])
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["time_ns"] + list(sel.labels))
+        for row in table:
+            w.writerow([f"{row[0]:.6f}"] + [f"{v:.6g}" for v in row[1:]])
+
+
+def _write_selection_pixels_csv(path: Path, sel: Selection) -> None:
+    """One row per selected pixel, with every metric -- the table you do stats on."""
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["selection"] + sel.pixel_columns)
+        for label, block in zip(sel.labels, sel.pixel_blocks):
+            for row in np.asarray(block):
+                w.writerow([label] + [f"{v:.6g}" for v in row])
 
 
 def _write_raw_tiff(path: Path, image: np.ndarray, metadata: dict[str, Any]) -> str:
@@ -120,12 +181,17 @@ def export_all(
     settings: dict[str, Any],
     colorbar_label: str = "photons in gate",
     title: str | None = None,
+    selection: Selection | None = None,
 ) -> dict[str, str]:
-    """Write all four export artefacts. Returns a map of role -> file path.
+    """Write the export artefacts. Returns a map of role -> file path.
 
     ``colorbar_label`` and ``title`` let a caller relabel the PNG for a
     non-intensity raster (e.g. a lifetime map). ``title`` defaults to the
     source-file-plus-gate string built from ``settings``.
+
+    When ``selection`` is given, three more files carry the selected pixels out
+    (label-map TIFF, pooled-decay CSV, per-pixel metric CSV) and the provenance
+    records what each selection was.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -153,25 +219,43 @@ def export_all(
     )
     _write_decay_csv(csv_path, time_ns, decay)
 
+    paths = {
+        "raw_tiff": str(raw_path),
+        "color_png": str(png_path),
+        "decay_csv": str(csv_path),
+    }
+    files = {k: Path(v).name for k, v in paths.items()}
+    sel_block: dict[str, Any] | None = None
+
+    if selection is not None and selection.labels:
+        mask_path = out_dir / f"{base}_selection_mask.tif"
+        sdec_path = out_dir / f"{base}_selection_decay.csv"
+        spix_path = out_dir / f"{base}_selection_pixels.csv"
+        _write_selection_mask(mask_path, selection, {**metadata, "settings": settings})
+        _write_selection_decay_csv(sdec_path, selection)
+        _write_selection_pixels_csv(spix_path, selection)
+        paths |= {"selection_mask": str(mask_path), "selection_decay": str(sdec_path),
+                  "selection_pixels": str(spix_path)}
+        files |= {"selection_mask": mask_path.name, "selection_decay": sdec_path.name,
+                  "selection_pixels": spix_path.name}
+        sel_block = {
+            "labels": selection.labels,
+            "pixel_counts": selection.counts(),
+            "pixel_columns": selection.pixel_columns,
+            "label_map_values": "0 = unselected; k = the k-th label above",
+        }
+
     provenance = {
         "tool": "ChronoGate",
         "metadata": metadata,
         "settings": settings,
         "raw_tiff_dtype": raw_dtype,
-        "files": {
-            "raw_tiff": raw_path.name,
-            "color_png": png_path.name,
-            "decay_csv": csv_path.name,
-        },
+        "selection": sel_block,
+        "files": files,
     }
     json_path.write_text(json.dumps(provenance, indent=2, default=str))
-
-    return {
-        "raw_tiff": str(raw_path),
-        "color_png": str(png_path),
-        "decay_csv": str(csv_path),
-        "provenance": str(json_path),
-    }
+    paths["provenance"] = str(json_path)
+    return paths
 
 
 def save_settings(path: str | Path, settings: dict[str, Any], metadata: dict[str, Any]) -> None:

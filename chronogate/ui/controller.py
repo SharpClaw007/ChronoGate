@@ -31,11 +31,12 @@ from matplotlib.path import Path as MplPath
 from matplotlib.widgets import LassoSelector, SpanSelector
 from matplotlib.patches import Rectangle
 
-from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker, QThread
+from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker, QThread, QTimer
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from .. import gating, metrics
 from ..loader import find_stack, load_ptu, FrameCache
+from .. import export as export_mod
 from ..export import export_all, load_settings, save_settings
 from . import theme
 
@@ -80,6 +81,16 @@ LIFETIME_CMAPS = ["turbo", "viridis", "plasma", "inferno", "cividis"]
 # Above this many pixels, a mask selection is shown only as a tint: one ring per
 # pixel would be denser than the pixels themselves and read as a solid blob.
 _MASK_MARKER_LIMIT = 500
+
+# "Pinned" markers. matplotlib draws with DejaVu Sans, which has no U+1F4CC
+# PUSHPIN -- it renders as a tofu box and warns on every redraw -- so the plot
+# legend gets a star (which DejaVu does have) while the Qt list keeps the emoji.
+_PIN_MARK_PLOT = "★ "   # BLACK STAR
+_PIN_MARK_LIST = "📌 "
+
+# A mask pick with no recipe (no lasso polygon) is saved as a coordinate list.
+# Beyond this it would bloat the settings file, so it is dropped instead.
+_MAX_SAVED_PIXELS = 50_000
 
 
 @contextmanager
@@ -185,8 +196,14 @@ class ViewerController(QObject):
 
         # Pixel list (the dock): rebuilt when the numbers change, not when the
         # selection does -- clicking a row must not rebuild the table under it.
+        # A rebuild ranks every pixel on every metric (~30 ms), so it is debounced:
+        # holding an arrow key to walk the gate must not re-rank once per keypress.
         self._pixel_key = None
         self._skip_pixel_list = False
+        self._pixel_timer = QTimer(self)
+        self._pixel_timer.setSingleShot(True)
+        self._pixel_timer.setInterval(120)
+        self._pixel_timer.timeout.connect(self.refresh_pixel_list)
 
         # Filled in when a file is loaded (see load_path).
         self.model = None
@@ -640,8 +657,6 @@ class ViewerController(QObject):
         for i, pick in enumerate(shown_picks):
             pinned = i < n_pinned
             tag = self._pick_tag(pick)
-            if pinned:
-                tag = "📌 " + tag
             raw = self._pick_decay(pick)
             shown = self._smooth(raw, self.smooth_bins)
             seg = raw[self.gate_lo_bin: self.gate_hi_bin + 1] - floor_pp
@@ -652,10 +667,15 @@ class ViewerController(QObject):
             fit = (gating.fit_mono_exponential(x, raw, self.model.t0_ns(), floor_pp)
                    if self.fit_curve else None)
             tau_note = f"  τ≈{fit[1]:.2f} ns" if fit else ""
+            body = f": {in_gate:.1f}/px in gate{tau_note}"
+            # The Qt list renders any emoji; the *plot* font (DejaVu Sans) has no
+            # pushpin, so a 📌 in the legend is a tofu box and a warning per redraw.
+            legend_tag = (_PIN_MARK_PLOT + tag) if pinned else tag
+            list_tag = (_PIN_MARK_LIST + tag) if pinned else tag
             # When fitting, fade the jagged raw steps so the smooth curve reads clearly.
             (ln,) = self.dc.ax.plot(x, shown, color=color, lw=1.2, drawstyle="steps-post",
                                     alpha=0.35 if fit else 1.0,
-                                    label=f"{tag}: {in_gate:.1f}/px in gate{tau_note}")
+                                    label=f"{legend_tag}{body}")
             self._pick_lines.append(ln)
             self._picks_ymax = max(self._picks_ymax, float(shown.max()))
             if fit is not None:
@@ -664,7 +684,7 @@ class ViewerController(QObject):
                                         label="_nolegend_")
                 self._pick_lines.append(fl)
                 self._picks_ymax = max(self._picks_ymax, float(np.nanmax(yfit)))
-            list_items.append((f"{tag} — {in_gate:.1f}/px in gate{tau_note}", color))
+            list_items.append((f"{list_tag} — {in_gate:.1f}/px in gate{tau_note}", color))
         if self.w is not None:
             self.w.picks.set_items(list_items)
 
@@ -858,8 +878,9 @@ class ViewerController(QObject):
             self._refresh_phasor_image()
         else:
             self._refresh_intensity_image()
-        if not self._skip_pixel_list:
-            self.refresh_pixel_list()   # the numbers moved, so the ranking has too
+        if not self._skip_pixel_list and self.w is not None \
+                and not self.w.pixel_dock.isHidden():
+            self._pixel_timer.start()   # the numbers moved, so the ranking has too
 
     def _set_phasor_axes(self, on: bool) -> None:
         """Toggle the right panel between the image (colorbar, no ticks) and the
@@ -917,12 +938,8 @@ class ViewerController(QObject):
             self._phasor_gs = self.model.phasor()
         return self._phasor_gs
 
-    def _on_phasor_lasso(self, verts) -> None:
-        """Pixels inside the drawn polygon become a selection: highlighted on the
-        image and pooled into one decay curve. This is selection by *lifetime
-        signature* rather than by location -- the point of having a phasor."""
-        if self.model is None or len(verts) < 3:
-            return
+    def _lasso_mask(self, verts) -> np.ndarray:
+        """Which pixels fall inside a polygon drawn on the phasor plot."""
         g, s = self._phasor_maps()
         pts = np.column_stack([g.ravel(), s.ravel()])
         ok = np.isfinite(pts).all(axis=1)
@@ -931,13 +948,25 @@ class ViewerController(QObject):
         mask = inside.reshape(g.shape)
         if self.threshold > 0:
             mask &= (self.model.intensity >= self.threshold)
+        return mask
+
+    def _on_phasor_lasso(self, verts) -> None:
+        """Pixels inside the drawn polygon become a selection: highlighted on the
+        image and pooled into one decay curve. This is selection by *lifetime
+        signature* rather than by location -- the point of having a phasor."""
+        if self.model is None or len(verts) < 3:
+            return
+        mask = self._lasso_mask(verts)
         n = int(mask.sum())
         if n == 0:
             self.statusMessage.emit("Lasso caught no pixels — draw around a denser part of the cloud.")
             return
         self.select_mask = mask
         self._lasso_verts = np.asarray(verts)
-        self._add_pick({"kind": "mask", "mask": mask, "label": f"phasor sel ({n:,} px)"})
+        # Keep the polygon on the pick: it is the *recipe* for the mask, so a saved
+        # settings file can restore a 160k-pixel selection from a few vertices.
+        self._add_pick({"kind": "mask", "mask": mask, "verts": self._lasso_verts,
+                        "label": f"phasor sel ({n:,} px)"})
         self.statusMessage.emit(
             f"Phasor lasso: {n:,} px ({100 * n / self.model.n_pixels:.1f}%) — their pooled decay is "
             f"on the left; press I for the intensity image to see them highlighted.")
@@ -2090,7 +2119,149 @@ class ViewerController(QObject):
             "gateB_lo_ns": round(blo_ns, 4), "gateB_hi_ns": round(bhi_ns, 4),
             "lifetime_cmap": self.lifetime_cmap, "rld_min_counts": self.rld_min_counts,
             "hsv_lifetime": self.hsv_lifetime, "combine": self.combine,
+            "hover_probe": self.hover_probe,
+            "pixel_list": self._pixel_list_settings(),
+            "picks": [self._pick_recipe(p) for p in self.picks],
+            "pinned_picks": [self._pick_recipe(p) for p in self.pinned_picks],
         }
+
+    # ------------------------------------------------- persisting a selection
+    def _pick_recipe(self, pick: dict) -> dict:
+        """A pick as a small, JSON-safe **recipe** rather than a pixel dump.
+
+        A phasor selection is stored as its lasso polygon -- a few vertices that
+        reproduce a 160k-pixel mask exactly -- and a list group as its coordinates.
+        Serialising the mask itself would put a quarter of a million booleans in a
+        settings file.
+        """
+        kind = pick["kind"]
+        if kind == "pixel":
+            return {"kind": "pixel", "r": int(pick["r"]), "c": int(pick["c"])}
+        if kind == "roi":
+            return {"kind": "roi", **{k: int(pick[k]) for k in ("r0", "r1", "c0", "c1")}}
+        if pick.get("verts") is not None:
+            return {"kind": "lasso", "verts": np.asarray(pick["verts"], float).tolist(),
+                    "label": pick.get("label")}
+        rr, cc = np.nonzero(pick["mask"])
+        if rr.size > _MAX_SAVED_PIXELS:   # no recipe and too big to list: drop it
+            return {"kind": "unsaved", "n_pixels": int(rr.size)}
+        return {"kind": "pixels", "coords": np.column_stack([rr, cc]).astype(int).tolist(),
+                "label": pick.get("label")}
+
+    def _pick_from_recipe(self, d: dict) -> dict | None:
+        """Rebuild a pick from :meth:`_pick_recipe` against the *current* model."""
+        ny, nx = self.model.intensity.shape
+        kind = d.get("kind")
+        if kind == "pixel":
+            r, c = int(d["r"]), int(d["c"])
+            if not (0 <= r < ny and 0 <= c < nx):
+                return None
+            return {"kind": "pixel", "r": r, "c": c, "label": f"px({r},{c})"}
+        if kind == "roi":
+            r0, r1, c0, c1 = (int(d[k]) for k in ("r0", "r1", "c0", "c1"))
+            if r1 > ny or c1 > nx or r1 <= r0 or c1 <= c0:
+                return None
+            return {"kind": "roi", "r0": r0, "r1": r1, "c0": c0, "c1": c1,
+                    "label": f"roi[{r0}:{r1},{c0}:{c1}]"}
+        if kind == "lasso":
+            verts = np.asarray(d.get("verts", []), dtype=float)
+            if verts.shape[0] < 3:
+                return None
+            mask = self._lasso_mask(verts)
+            if not mask.any():
+                return None
+            return {"kind": "mask", "mask": mask, "verts": verts,
+                    "label": d.get("label") or f"phasor sel ({int(mask.sum()):,} px)"}
+        if kind == "pixels":
+            coords = np.asarray(d.get("coords", []), dtype=int)
+            if coords.size == 0:
+                return None
+            keep = ((coords[:, 0] >= 0) & (coords[:, 0] < ny)
+                    & (coords[:, 1] >= 0) & (coords[:, 1] < nx))
+            coords = coords[keep]
+            if coords.size == 0:
+                return None
+            mask = np.zeros((ny, nx), dtype=bool)
+            mask[coords[:, 0], coords[:, 1]] = True
+            return {"kind": "mask", "mask": mask,
+                    "label": d.get("label") or f"list sel ({int(mask.sum()):,} px)"}
+        return None
+
+    def _pixel_list_settings(self) -> dict:
+        if self.w is None:
+            return {}
+        p = self.w.pixels
+        return {
+            "open": not self.w.pixel_dock.isHidden(),
+            "metric": p.current_metric(), "descending": p.desc.isChecked(),
+            "limit": p.limit.value(), "vmin": p.fmin.value(), "vmax": p.fmax.value(),
+        }
+
+    def _apply_pixel_list_settings(self, s: dict) -> None:
+        if self.w is None or not s:
+            return
+        p = self.w.pixels
+        key = s.get("metric")
+        keys = [m.key for m in metrics.metrics()]
+        with _blocked(p.metric, p.desc, p.limit, p.fmin, p.fmax):
+            if key in keys:
+                p.metric.setCurrentIndex(keys.index(key))
+                self._pixel_key = key      # the saved bounds are for THIS metric
+            p.desc.setChecked(bool(s.get("descending", p.desc.isChecked())))
+            p.limit.setValue(int(s.get("limit", p.limit.value())))
+            if "vmin" in s and "vmax" in s:
+                p.fmin.setValue(float(s["vmin"]))
+                p.fmax.setValue(float(s["vmax"]))
+        self.w.pixel_dock.setVisible(bool(s.get("open", False)))
+
+    def _apply_pick_settings(self, s: dict) -> None:
+        """Restore the saved picks, dropping any that no longer fit the model."""
+        self.pinned_picks = [p for p in
+                             (self._pick_from_recipe(d) for d in s.get("pinned_picks", []))
+                             if p is not None]
+        self.picks = [p for p in (self._pick_from_recipe(d) for d in s.get("picks", []))
+                      if p is not None][:1]
+        self.select_mask = None
+        self._lasso_verts = None
+        for pick in self.picks:
+            if pick["kind"] == "mask":
+                self.select_mask = pick["mask"]
+                self._lasso_verts = pick.get("verts")
+
+    # ------------------------------------------------------- selection export
+    def _pick_pixel_mask(self, pick: dict) -> np.ndarray:
+        """Every pick kind as a boolean (Y, X) mask."""
+        if pick["kind"] == "mask":
+            return np.asarray(pick["mask"], dtype=bool)
+        r0, r1, c0, c1, _ = self._pick_region(pick)
+        m = np.zeros(self.model.intensity.shape, dtype=bool)
+        m[r0:r1, c0:c1] = True
+        return m
+
+    def _selection_payload(self):
+        """Package the current picks so they can leave the program (see
+        :class:`chronogate.export.Selection`). ``None`` when nothing is selected."""
+        picks = self._shown_picks()
+        if self.model is None or not picks:
+            return None
+        ctx = self._metric_ctx()
+        keys = [m.key for m in metrics.metrics()]
+        columns = {k: metrics.get(k).compute(ctx) for k in keys}
+        n_pinned = len(self.pinned_picks)
+        label_map = np.zeros(self.model.intensity.shape, dtype=np.uint16)
+        labels, decays, blocks = [], [], []
+        for i, pick in enumerate(picks):
+            tag = ("pinned " if i < n_pinned else "") + self._pick_tag(pick)
+            mask = self._pick_pixel_mask(pick)
+            rr, cc = np.nonzero(mask)
+            labels.append(tag)
+            label_map[mask] = i + 1        # later picks win where they overlap
+            decays.append(np.asarray(self._pick_decay(pick), dtype=float))
+            blocks.append(np.column_stack(
+                [rr, cc] + [columns[k][rr, cc] for k in keys]).astype(float))
+        return export_mod.Selection(
+            labels=labels, label_map=label_map, time_ns=self.model.cube.time_axis_ns,
+            decays=decays, pixel_columns=["row", "col"] + keys, pixel_blocks=blocks)
 
     def _current_image_for_export(self):
         floor = self._floor_per_pixel() if self.apply_floor else 0.0
@@ -2108,6 +2279,9 @@ class ViewerController(QObject):
         out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports"
         stem = self.model.cube.path.stem
         time_ns = self.model.cube.time_axis_ns
+        # Whatever is picked (a pixel, an ROI, a phasor cluster, a list group) leaves
+        # with the export -- otherwise you can select a population and never get it out.
+        selection = self._selection_payload()
         if self.mode == "lifetime":
             tau, rl = self._compute_lifetime_map()
             vmin, vmax = self._clim_from(tau[np.isfinite(tau)], 2, 98, floor_gap=1e-3)
@@ -2116,13 +2290,14 @@ class ViewerController(QObject):
             paths = export_all(out_dir, base, gated_image=tau, time_ns=time_ns, decay=self.model.decay,
                                cmap=self.lifetime_cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
                                settings=self._settings(), colorbar_label="apparent lifetime (ns)",
-                               title=f"{self.model.cube.path.name} | RLD τ  (Δt {rl['dt_ns']:.2f} ns)")
+                               title=f"{self.model.cube.path.name} | RLD τ  (Δt {rl['dt_ns']:.2f} ns)",
+                               selection=selection)
         else:
             base = f"{stem}_ch{self.channel}_gate{self.gate_lo_bin}-{self.gate_hi_bin}"
             display, vmin, vmax = self._current_image_for_export()
             paths = export_all(out_dir, base, gated_image=display, time_ns=time_ns, decay=self.model.decay,
                                cmap=self.cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
-                               settings=self._settings())
+                               settings=self._settings(), selection=selection)
         return paths
 
     def batch_export(self, out_dir=None) -> int:
@@ -2236,10 +2411,18 @@ class ViewerController(QObject):
         self.rld_min_counts = float(s.get("rld_min_counts", self.rld_min_counts))
         self.hsv_lifetime = bool(s.get("hsv_lifetime", self.hsv_lifetime))
         self.combine = s.get("combine", self.combine)
-        mode = "lifetime" if s.get("mode", self.mode) == "lifetime" else "intensity"
+        self.hover_probe = bool(s.get("hover_probe", self.hover_probe))
+        mode = s.get("mode", self.mode)
+        mode = mode if mode in ("lifetime", "phasor") else "intensity"
         self.edit_target = "B" if (mode == "lifetime" and s.get("edit_target") == "B") else "A"
+
+        # The selection last, so a lasso is re-cut against the restored threshold,
+        # gate and binning -- exactly the state it was drawn under.
+        self._end_hover(redraw=False)
+        self._apply_pick_settings(s)
 
         self._refit_ranges()
         self.sync_widgets_from_state()
+        self._apply_pixel_list_settings(s.get("pixel_list", {}))
         self._update_header()
         self._enter_mode(mode)

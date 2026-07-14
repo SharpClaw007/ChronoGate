@@ -358,6 +358,13 @@ class GatingModel:
         self.bg_per_bin = background_per_bin(self._counts, self.t0_bin)
 
     @property
+    def counts(self) -> np.ndarray:
+        """The (Y, X, H) photon cube these results are derived from -- **spatially
+        binned** if binning is on. This is the public handle a custom per-pixel
+        metric works from (see :mod:`chronogate.metrics`)."""
+        return self._counts
+
+    @property
     def resolution_ns(self) -> float:
         return self.cube.resolution_ns
 

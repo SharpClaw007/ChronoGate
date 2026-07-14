@@ -389,13 +389,18 @@ def test_hover_probe_blits() -> None:
     print("OK: hover blits the pixel's decay live; axis frozen; click locks it in.")
 
 
-def _flush_selection(panel) -> None:
-    """Let the pixel list's debounced selection reach the controller."""
+def _flush_timer(timer) -> None:
+    """Spin the event loop until a debounce timer has fired."""
     import time
     from PySide6.QtWidgets import QApplication
     deadline = time.monotonic() + 2.0
-    while panel._sel_timer.isActive() and time.monotonic() < deadline:
+    while timer.isActive() and time.monotonic() < deadline:
         QApplication.instance().processEvents()
+
+
+def _flush_selection(panel) -> None:
+    """Let the pixel list's debounced selection reach the controller."""
+    _flush_timer(panel._sel_timer)
 
 
 def test_pixel_list() -> None:
@@ -500,8 +505,11 @@ def test_pixel_list_multi_select() -> None:
     total = int(c._gated[mask].sum())
     assert "list sel (5 px)" in c.ic.ax.get_title() and f"{total:,}" in c.ic.ax.get_title()
 
-    # A gate change rebuilds the table but must not lose the group's selection.
+    # A gate change re-ranks (debounced, so holding an arrow key doesn't re-rank
+    # per keypress) and rebuilds the table -- but must not lose the group's selection.
     c.nudge_gate(1, 0)
+    assert c._pixel_timer.isActive(), "the re-rank is debounced, not run per keypress"
+    _flush_timer(c._pixel_timer)
     assert len(p.selected_pixels()) == 5, "the group stays selected across a rebuild"
     assert len(c.picks) == 1 and c.picks[0]["kind"] == "mask"
 
@@ -512,6 +520,141 @@ def test_pixel_list_multi_select() -> None:
     assert not c.mask_im.get_visible(), "one pixel is not a group -- no spotlight"
     w.pixel_dock.hide()
     print("OK: multi-select pools rows into one group (decay, spotlight, combined total).")
+
+
+def test_selection_export() -> None:
+    """A selection must be able to leave the program, or the feature is a dead end."""
+    import csv as _csv
+    import tifffile
+    from chronogate import metrics
+    w = _window()
+    c = w.controller
+
+    # Pin one pixel, then select a group of pixels: both should export.
+    c._add_pixel(100, 100)
+    c._on_pin()
+    c._on_pixel_rows([(10, 20), (11, 21), (12, 22)])
+    assert len(c._shown_picks()) == 2
+
+    out = Path(tempfile.mkdtemp())
+    paths = c.export(out)
+    for role in ("selection_mask", "selection_decay", "selection_pixels"):
+        assert role in paths and Path(paths[role]).exists(), role
+
+    # The label map: 0 unselected, k = the k-th selection (pinned pixel = 1, group = 2).
+    lab = tifffile.imread(paths["selection_mask"])
+    assert lab.shape == c.model.intensity.shape
+    assert lab[100, 100] == 1, "the pinned pixel is label 1"
+    assert lab[10, 20] == 2 and lab[12, 22] == 2, "the group is label 2"
+    assert int((lab == 2).sum()) == 3 and int((lab > 0).sum()) == 4
+
+    # The pooled decay CSV: one column per selection, on the real time axis.
+    rows = list(_csv.reader(open(paths["selection_decay"])))
+    assert len(rows) == c.model.n_bins + 1
+    assert rows[0][0] == "time_ns" and len(rows[0]) == 3, rows[0]
+    group_decay = np.array([float(r[2]) for r in rows[1:]])
+    assert np.allclose(group_decay, c.model.mask_decay(c.picks[0]["mask"]))
+
+    # The pixel table: one row per selected pixel, every registered metric present.
+    prows = list(_csv.DictReader(open(paths["selection_pixels"])))
+    assert len(prows) == 4, "1 pinned pixel + 3 in the group"
+    for key in (m.key for m in metrics.metrics()):
+        assert key in prows[0], key
+    got = {(int(r["row"]), int(r["col"])) for r in prows}
+    assert got == {(100, 100), (10, 20), (11, 21), (12, 22)}
+    gated = c._gated
+    for r in prows:
+        assert abs(float(r["in_gate"]) - gated[int(r["row"]), int(r["col"])]) < 1e-6
+
+    # Provenance records what each selection was.
+    prov = json.loads(Path(paths["provenance"]).read_text())
+    assert prov["selection"]["pixel_counts"] == [1, 3]
+    assert "list sel (3 px)" in prov["selection"]["labels"][1]
+
+    # With nothing picked, no selection files are written at all.
+    c._clear_picks()
+    plain = c.export(Path(tempfile.mkdtemp()))
+    assert not any(k.startswith("selection") for k in plain)
+    assert json.loads(Path(plain["provenance"]).read_text())["selection"] is None
+    print("OK: selections export as a label map + pooled decays + a per-pixel metric table.")
+
+
+def test_settings_roundtrip_restores_selection() -> None:
+    """Save/load must not silently lose the selection or the pixel-list setup."""
+    from PySide6.QtWidgets import QApplication
+    w = _window()
+    c = w.controller
+    w.show()
+    QApplication.instance().processEvents()
+
+    # A phasor lasso: 160k pixels, saved as its polygon rather than 262k booleans.
+    c._enter_mode("phasor")
+    verts = [(0.5, 0.05), (1.0, 0.05), (1.0, 0.45), (0.5, 0.45)]
+    c._on_phasor_lasso(verts)
+    lasso_mask = c.picks[0]["mask"].copy()
+    n = int(lasso_mask.sum())
+    assert n > 1000
+
+    c._enter_mode("intensity")
+    c.hover_probe = False
+    w.act_pixels.trigger()
+    QApplication.instance().processEvents()
+    w.pixels.limit.setValue(37)
+
+    s = c._settings()
+    assert s["picks"][0]["kind"] == "lasso", "a lasso is saved as its polygon"
+    assert len(json.dumps(s)) < 20_000, "a 160k-pixel selection must not bloat the file"
+    assert s["pixel_list"]["open"] and s["pixel_list"]["limit"] == 37
+    assert s["hover_probe"] is False
+
+    # Wipe the state, then restore it.
+    c._clear_picks()
+    c.hover_probe = True
+    w.pixel_dock.hide()
+    w.pixels.limit.setValue(200)
+
+    c.apply_settings(s)
+    QApplication.instance().processEvents()
+    assert len(c.picks) == 1 and c.picks[0]["kind"] == "mask"
+    assert np.array_equal(c.picks[0]["mask"], lasso_mask), "the lasso is re-cut exactly"
+    assert c.select_mask is not None and c.mask_im.get_visible()
+    assert c.hover_probe is False
+    assert not w.pixel_dock.isHidden() and w.pixels.limit.value() == 37
+
+    # A pinned pixel + an ROI survive too.
+    c._add_pixel(60, 61)
+    c._on_pin()
+    c._add_pick({"kind": "roi", "r0": 5, "r1": 9, "c0": 5, "c1": 9, "label": "roi"})
+    s2 = c._settings()
+    c._clear_picks()
+    c.apply_settings(s2)
+    assert len(c.pinned_picks) == 1 and c.pinned_picks[0]["r"] == 60
+    assert len(c.picks) == 1 and c.picks[0]["kind"] == "roi" and c.picks[0]["r1"] == 9
+    w.pixel_dock.hide()
+    print(f"OK: settings round-trip restores the {n:,}-px lasso (as a polygon), picks, "
+          f"pins, hover and the pixel list.")
+
+
+def test_pin_glyph_is_in_the_plot_font() -> None:
+    """The plot font has no pushpin: a 📌 in the legend is a tofu box + a warning."""
+    import warnings as _w
+    from matplotlib.font_manager import findfont, FontProperties
+    from chronogate.ui import controller as ctrl
+    w = _window()
+    c = w.controller
+    c._add_pixel(50, 50)
+    c._on_pin()
+    labels = [ln.get_label() for ln in c._pick_lines]
+    assert any(lab.startswith(ctrl._PIN_MARK_PLOT) for lab in labels), labels
+    assert not any("📌" in lab for lab in labels), "the emoji must not reach matplotlib"
+    # ...but the Qt list, which renders emoji fine, keeps it.
+    assert "📌" in w.picks.list.item(0).text()
+
+    # Drawing a pinned decay must not warn about a missing glyph.
+    with _w.catch_warnings():
+        _w.simplefilter("error", UserWarning)
+        c.dc.fig.canvas.draw()
+    print("OK: the pinned marker renders in the plot font (no missing-glyph warning).")
 
 
 def test_pixel_cursor_and_goto() -> None:
@@ -656,6 +799,9 @@ if __name__ == "__main__":
         test_hover_probe_blits()
         test_pixel_list()
         test_pixel_list_multi_select()
+        test_selection_export()
+        test_settings_roundtrip_restores_selection()
+        test_pin_glyph_is_in_the_plot_font()
         test_pixel_cursor_and_goto()
         test_pick_markers_on_image()
         test_phasor_lasso_selection()

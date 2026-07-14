@@ -185,6 +185,11 @@ class MainWindow(QMainWindow):
         dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         dock.setWidget(self.pixels)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        # Floating by default: docked, the table steals ~350 px from the workspace and
+        # forces the controls rack into a horizontal scrollbar. Drag it to an edge to
+        # dock it if you would rather have it inline.
+        dock.setFloating(True)
+        dock.resize(560, 620)
         dock.hide()                       # opt-in (View ▸ Pixel list, or Ctrl+P)
         self.pixel_dock = dock
         return dock
