@@ -1,7 +1,7 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.9.0, working tree clean,
-38 tests green (12 in `test_gating.py`, 26 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.10.0, working tree clean,
+45 tests green (13 in `test_gating.py`, 32 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -19,33 +19,35 @@ every change ships with a test and a green run of both suites.
 
 ## Where we left off
 
-Nothing is in progress. The last session (v0.9) closed out **all seven candidates**
-from the previous handoff, one commit each:
+Nothing is in progress. Two sessions back (v0.9) closed the original seven-item
+improvement list (selection stats, group compare, big-CSV ask, batch selection
+re-cut, phasor calibration, `_lifetime_init` defused, gridlines-under-hexbin).
+The last session (v0.10) closed **all six candidates from the v0.9 handoff**,
+one commit each, then passed an adversarial diff review (no findings) and an
+offscreen full-feature launch smoke:
 
-1. **Selection statistics.** `metrics.mask_stats` aggregates any registered metric
-   over a pixel mask (mean/median/std over *finite* values, plus the valid count);
-   the Stats panel now speaks for the active pick — pixel, ROI, lasso or list
-   group — and reverts to whole-image stats on clear.
-2. **Compare selections.** Each shown pick (pinned or live) states its aggregate
-   `med τ x.xx ns` in the legend and pick list, from one shared τ map — so two
-   phasor clusters or top-N/bottom-N groups compare by numbers, not just shape.
-3. **Big pixel-table warning.** A >100k-pixel selection announces its row count and
-   ~CSV size and asks before writing the per-pixel table (`_confirm_pixel_table` /
-   `export(..., include_pixel_table=)`). Never capped; the label map and pooled
-   decays are written either way; an omission is recorded in the provenance.
-4. **Batch export carries selections.** Picks travel as *recipes*: a lasso polygon
-   is re-cut against each plane's own phasor, located picks carry across, and the
-   live picks are restored untouched afterwards.
-5. **Phasor calibration** (View ▸ Calibrate phasor). The median **raw** phasor of
-   the selection (or thresholded image) maps onto the semicircle position of a
-   known reference τ; the rotation/modulation applies to plot, lasso and g/s
-   metrics alike, persists through settings/provenance, and clears cleanly.
-   Numeric layer: `gating.phasor_reference/phasor_calibration/apply_phasor_calibration`.
-6. **`_lifetime_init` defused.** Gate B is a valid later gate from load, and
-   `_rld_gates` is keyed on the *mode*: lifetime mode uses the A/B pair verbatim
-   (τ column == τ map), every other mode splits the current gate into equal
-   halves. The flag now only picks the first-entry gate layout.
-7. **Phasor gridlines** draw under the hexbin (`set_axisbelow(True)`).
+1. **Shared τ-map cache.** `MetricContext.tau_fn` (the `phasor_fn` pattern) +
+   `controller._tau_map()`, keyed on (model-weakref, RLD gates, floor, min
+   counts). The pick legend, the pixel list, `mask_stats` and the exports all
+   read one map instead of re-running RLD each.
+2. **Aggregates in provenance.** Each exported selection label carries its
+   `mask_stats` block (mean/median/std/valid-n per metric), JSON-safe (NaN →
+   null via `_json_safe_stats`), present even when the pixel table is omitted.
+3. **τref marker + τ ruler.** A calibrated phasor marks the reference position
+   (cross + label) and labelled τ ticks (0.5–16 ns) along the semicircle — the
+   reference cloud must sit on its cross, so a calibration is visibly checkable.
+   Only drawn when calibrated; meaningless on a raw phasor.
+4. **Second harmonic** (View ▸ Phasor 2nd harmonic). `self.harmonic` (1|2) keys
+   the (g, s) cache, lasso, metrics, ruler and title; **each harmonic keeps its
+   own calibration** (`phasor_cals: {harmonic: cal}`). Settings persist both;
+   v0.9 single-cal files land on harmonic 1.
+5. **Selection overlay on the τ histogram.** The inset overlays the active
+   selection's τ distribution (same 40 display-range bins, accent colour).
+6. **Undo for selections** (Ctrl+Z / View ▸ Undo selection change). A 20-deep
+   history of complete pick states; pixel-cursor walks coalesce into one entry
+   so holding an arrow key cannot flush a lasso out of the bounded history;
+   pin/clear/settings-load are always their own step; restored states are
+   revalidated against the current model shape.
 
 ## Architecture a newcomer needs to know
 
@@ -75,11 +77,19 @@ and, since v0.9, against **each plane's phasor** during a batch export
 (`_picks_for_current_model`).
 
 **The phasor calibration lives in `_phasor_maps`.** One cache, keyed on
-(model-weakref, t0, (φ, mod)), feeds the plot, the lasso and the g/s metrics, so
-they can never disagree about which (g, s) space they are in. `calibrate_phasor`
-always measures the **raw** maps — recalibrating replaces the correction instead
-of compounding it. Saved lasso polygons live in calibrated space, which is why
-`apply_settings` restores the calibration *before* the picks.
+(model-weakref, t0, harmonic, (φ, mod)), feeds the plot, the lasso and the g/s
+metrics, so they can never disagree about which (g, s) space they are in.
+`calibrate_phasor` always measures the **raw** maps — recalibrating replaces the
+correction instead of compounding it. Saved lasso polygons live in calibrated
+space, which is why `apply_settings` restores the harmonic and calibrations
+*before* the picks. The τ map has the same shape of cache (`_tau_map`), injected
+into `MetricContext.tau_fn`.
+
+**Pick history** (`_snapshot_picks` / `undo_pick`). Snapshots are complete
+tuples (picks, pins, spotlight mask, lasso verts); the lists are copied because
+`_on_pin` mutates `pinned_picks` in place, the pick dicts are shared because
+they are never mutated. Consecutive *trivial* states (mask-less, all-pixel)
+coalesce; mutations that deserve their own step pass `force=True`.
 
 **The hover blit** (`_hover_begin` / `_hover_draw` / `_on_decay_draw`). The y-axis
 is *frozen* for a hover session — required (a blit background bakes the axis in)
@@ -124,22 +134,24 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
 
 ## Next candidates (nothing committed to; ranked as I'd do them)
 
-1. **Mark the reference point on the calibrated phasor.** After calibrating, draw
-   the τref position (and maybe a τ ruler along the semicircle: 1, 2, 4, 8 ns
-   ticks). Cheap, and it makes the calibration visibly verifiable.
-2. **Selection aggregates into the provenance.** `mask_stats` output (mean/median
-   τ, photons) recorded per selection in the export JSON — the numbers a paper
-   quotes should leave the program with the data.
-3. **Second harmonic.** `phasor()` already takes `harmonic`; the UI pins it to 1.
-   A toggle plus per-harmonic calibration disambiguates multi-component mixtures.
-4. **τ-histogram inset for the selection.** The lifetime histogram currently shows
-   the whole image; overlaying the selection's τ distribution (same bins, accent
-   colour) would make "is this cluster different?" answerable at a glance.
-5. **Cache the pick-legend τ map.** `_redraw_pick_lines` recomputes the τ map per
-   decay refresh while picks are shown (~ms, fine, but it is the same map the
-   pixel list computes — one keyed cache would serve both).
-6. **Undo for picks.** Losing a carefully drawn lasso to a stray click on the
-   image is the sharpest UX edge left.
+1. **Export the phasor plot.** Export covers the intensity/lifetime rasters; in
+   phasor mode you get the intensity export. A calibrated phasor figure (hexbin +
+   semicircle + ruler + lasso) is a paper panel and should be exportable as PNG,
+   with (g, s) maps as TIFFs for people who compute their own fractions.
+2. **Redo.** Undo exists; a redo stack is its natural complement (undo currently
+   discards the popped state).
+3. **A visible calibration readout.** The calibration lives only in the phasor
+   title and a status message; a persistent readout (φ, mod, τref, harmonic —
+   e.g. a Stats row in phasor mode) would make state obvious after a reload.
+4. **Two-component fractions.** With a calibrated phasor, the fraction along the
+   chord between two chosen semicircle points is quantitative composition — the
+   standard next analysis after calibration (pick τ₁/τ₂, colour pixels by
+   fractional position).
+5. **Arbitrary harmonic (spin box).** The plumbing is harmonic-generic already;
+   the UI exposes 1|2. Cheap if ever needed; do with a use case in hand.
+6. **IRF-aware analysis.** Loading a measured IRF (deconvolved fitting, exact
+   t0) is the step from "gating viewer" toward "fitting tool" — big, and it
+   changes the numpy-only constraint conversation (still doable with numpy).
 
 ## Non-obvious decisions worth not re-litigating
 
@@ -158,6 +170,13 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
   pixels, ROIs, coordinate groups — carry across unchanged.
 - **Calibration measures the raw phasor, always.** Building the factor from
   calibrated maps would compound corrections on every recalibrate.
+- **Calibration is per harmonic.** The same reference measurement yields a
+  different complex factor at each ω; one shared factor would be silently wrong
+  on the other harmonic. `phasor_cal` (the property) is "the current harmonic's
+  calibration or None".
+- **Undo coalesces pixel walks, and only pixel walks.** Every mask/ROI/pin/clear
+  state is preserved; without coalescing, holding an arrow key flushes the lasso
+  out of the 20-deep history — the exact loss undo exists to prevent.
 - **A tint alone cannot mark a selection** — a green wash over viridis reads as
   just another colormap value. The overlay veils the *unselected* pixels and tints
   the selected in magenta (`theme.SELECT`, a hue no colormap here produces). Small
