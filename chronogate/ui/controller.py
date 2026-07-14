@@ -1361,9 +1361,11 @@ class ViewerController(QObject):
                 pass
             self._tau_hist_ax = None
 
-    def _draw_tau_hist(self, finite, vmin, vmax) -> None:
+    def _draw_tau_hist(self, finite, vmin, vmax, selection=None) -> None:
         """A small τ-distribution histogram inset on the lifetime image, coloured
-        by the τ colormap. The lock min/max restricts the shown range."""
+        by the τ colormap. The lock min/max restricts the shown range. When a
+        selection is active, its τ distribution is overlaid in the accent colour
+        (same bins), so "is this cluster different?" is answerable at a glance."""
         self._remove_tau_hist()
         if finite.size < 2 or vmax <= vmin:
             return
@@ -1373,13 +1375,27 @@ class ViewerController(QObject):
         centers = 0.5 * (edges[:-1] + edges[1:])
         colors = matplotlib.colormaps[self.lifetime_cmap](Normalize(vmin, vmax)(centers))
         ax.bar(centers, counts, width=edges[1] - edges[0], color=colors, edgecolor="none")
+        if selection is not None and selection.size:
+            sel_counts, _ = np.histogram(selection, bins=40, range=(vmin, vmax))
+            for p in ax.bar(centers, sel_counts, width=edges[1] - edges[0],
+                            color=theme.SELECT, alpha=0.85, edgecolor="none", zorder=3):
+                p.set_gid("tau_sel")
         ax.patch.set_alpha(0.55)
         ax.set_yticks([])
         ax.tick_params(labelsize=6, length=2)
-        ax.set_title("τ (ns)", fontsize=6)
+        ax.set_title("τ (ns) · selection" if selection is not None and selection.size
+                     else "τ (ns)", fontsize=6)
         for spine in ("top", "right", "left"):
             ax.spines[spine].set_visible(False)
         self._tau_hist_ax = ax
+
+    def _selection_tau(self, tau: np.ndarray) -> np.ndarray | None:
+        """The active selection's finite τ values (None when nothing is selected)."""
+        pick = self._active_pick()
+        if pick is None:
+            return None
+        v = tau[self._pick_pixel_mask(pick)]
+        return v[np.isfinite(v)]
 
     def _lifetime_rgb(self, tau, vmin, vmax):
         """Intensity-weighted lifetime image: hue from τ (the lifetime colormap),
@@ -1422,7 +1438,7 @@ class ViewerController(QObject):
         self._fit_image_axes(tau.shape)
         self._redraw_mask_overlay(tau.shape)
         self._redraw_pick_markers()
-        self._draw_tau_hist(finite, vmin, vmax)
+        self._draw_tau_hist(finite, vmin, vmax, self._selection_tau(tau))
         self.cbar.set_label("apparent lifetime (ns)")
 
         res = self.model.resolution_ns

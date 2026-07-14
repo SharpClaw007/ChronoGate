@@ -273,6 +273,41 @@ def test_wave_c_views() -> None:
     print("OK: phasor · HSV lifetime · τ-histogram · pin decay · channel combine all render.")
 
 
+def test_tau_hist_selection_overlay() -> None:
+    """'Is this cluster's lifetime different?' -- the τ-histogram inset overlays
+    the selection's distribution (same bins, accent colour) over the image's."""
+    w = _window()
+    c = w.controller
+    w.binning.bin.setValue(8)            # pool photons so τ resolves
+    c._enter_mode("lifetime")
+    assert c._tau_hist_ax is not None
+
+    def sel_patches():
+        return [p for p in c._tau_hist_ax.patches if p.get_gid() == "tau_sel"]
+
+    assert not sel_patches(), "no selection -> no overlay"
+
+    c._add_pick({"kind": "roi", "r0": 100, "r1": 140, "c0": 100, "c1": 140,
+                 "label": "roi[100:140,100:140]"})
+    got = sel_patches()
+    assert got, "the selection's τ distribution is overlaid on the inset"
+
+    # The overlay is the exact histogram of the selection's finite τ values,
+    # over the same 40 display-range bins as the whole-image histogram.
+    tau, _ = c._compute_lifetime_map()
+    v = tau[c._pick_pixel_mask(c.picks[0])]
+    v = v[np.isfinite(v)]
+    assert v.size, "the test ROI must contain valid lifetimes"
+    counts, _ = np.histogram(v, bins=40, range=c.im.get_clim())
+    assert np.allclose([p.get_height() for p in got], counts)
+
+    c._clear_picks()
+    assert not sel_patches(), "clearing the pick clears the overlay"
+    c._enter_mode("intensity")
+    w.binning.bin.setValue(1)
+    print("OK: τ-histogram inset overlays the selection's distribution.")
+
+
 def test_probe_and_batch_export() -> None:
     import tempfile
     from pathlib import Path as P
@@ -1230,6 +1265,7 @@ if __name__ == "__main__":
         test_fit_overlay()
         test_wave_c_views()
         test_cache_lockscale_and_t0()
+        test_tau_hist_selection_overlay()
         test_probe_and_batch_export()
         test_batch_export_recuts_selection_per_plane()
         test_threaded_decode()
