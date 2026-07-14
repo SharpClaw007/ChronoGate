@@ -960,6 +960,20 @@ def test_rld_gates_valid_at_load_and_mode_keyed() -> None:
     print("OK: gate B valid from load; τ gates follow the mode (A/B in lifetime, split elsewhere).")
 
 
+def test_phasor_grid_under_hexbin() -> None:
+    """The phasor gridlines must draw UNDER the hexbin cloud, not across it."""
+    w = _window()
+    c = w.controller
+    c._enter_mode("phasor")
+    ax = c.ic.ax
+    hexbins = [a for a in c._phasor_artists if hasattr(a, "get_offsets")]
+    assert hexbins, "the phasor hexbin must exist"
+    assert ax.get_axisbelow() is True, "gridlines must be drawn below the data"
+    assert ax.xaxis.get_zorder() < min(h.get_zorder() for h in hexbins)
+    c._enter_mode("intensity")
+    print("OK: phasor gridlines render under the hexbin.")
+
+
 def test_phasor_calibration_ui() -> None:
     """Calibrating from a reference makes the phasor quantitative: the maps, the
     metrics and the plot all rotate/scale together, it survives a settings
@@ -1072,6 +1086,7 @@ if __name__ == "__main__":
         test_compare_pinned_groups()
         test_selection_stats_in_stats_panel()
         test_rld_gates_valid_at_load_and_mode_keyed()
+        test_phasor_grid_under_hexbin()
         test_phasor_calibration_ui()
         test_floor_slider_summed_range_and_scale()
     except AssertionError as exc:

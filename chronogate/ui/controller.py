@@ -919,6 +919,9 @@ class ViewerController(QObject):
             ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
             ax.set_yticks([0, 0.25, 0.5])
             ax.set_xlabel("g"); ax.set_ylabel("s")
+            # matplotlib's default axisbelow='line' draws the grid at z 1.5 --
+            # OVER a hexbin collection (z 1). Push it under the data.
+            ax.set_axisbelow(True)
         else:
             ax.set_xticks([]); ax.set_yticks([])
             ax.set_xlabel(""); ax.set_ylabel("")
