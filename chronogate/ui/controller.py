@@ -96,6 +96,10 @@ _MAX_SAVED_PIXELS = 50_000
 # writing it (never capped -- it is the data the user asked for -- but knowingly).
 _PIXEL_TABLE_WARN_ROWS = 100_000
 
+# How many pick states Ctrl+Z can walk back through. States hold references
+# (picks are replaced, never mutated in place), so the memory cost is small.
+_UNDO_DEPTH = 20
+
 
 def _json_safe_stats(stats: dict) -> dict:
     """mask_stats output with non-finite values as None -- NaN is not JSON."""
@@ -207,6 +211,9 @@ class ViewerController(QObject):
         # list and the selection stats all read this one map (see _tau_map).
         self._tau_key = None
         self._tau_val = None
+
+        # Pick-state history for Ctrl+Z (a stray click must not cost a lasso).
+        self._pick_undo: list[tuple] = []
 
         # Cached from the last intensity refresh, so a hover can restate the
         # readout without recomputing the whole gated image.
@@ -1816,9 +1823,59 @@ class ViewerController(QObject):
         c = max(0, min(nx - 1, c))
         self._add_pick({"kind": "pixel", "r": r, "c": c, "label": f"px({r},{c})"})
 
+    # ----------------------------------------------------------- pick history
+    def _pick_state(self) -> tuple:
+        """A complete, restorable snapshot of the selection state. The lists are
+        copied (``_on_pin`` mutates ``pinned_picks`` in place); the pick dicts
+        themselves are never mutated, so references suffice below that."""
+        return (list(self.picks), list(self.pinned_picks),
+                self.select_mask, self._lasso_verts)
+
+    @staticmethod
+    def _trivial_pick_state(state: tuple) -> bool:
+        """Nothing in this state is expensive to rebuild by hand: no mask
+        selection, only plain pixel picks."""
+        picks, _pins, mask, _verts = state
+        return mask is None and all(p["kind"] == "pixel" for p in picks)
+
+    def _snapshot_picks(self, force: bool = False) -> None:
+        """Push the current pick state onto the undo history.
+
+        Consecutive *trivial* states (pixel-cursor walks) coalesce -- holding an
+        arrow key must not flush a lasso out of a bounded history -- but any
+        state holding a mask, an ROI or a pin change is always preserved.
+        """
+        state = self._pick_state()
+        if not force and self._pick_undo:
+            top = self._pick_undo[-1]
+            if (self._trivial_pick_state(state) and self._trivial_pick_state(top)
+                    and len(top[1]) == len(state[1])
+                    and all(a is b for a, b in zip(top[1], state[1]))):
+                return
+        self._pick_undo.append(state)
+        if len(self._pick_undo) > _UNDO_DEPTH:
+            self._pick_undo.pop(0)
+
+    def undo_pick(self) -> bool:
+        """Restore the selection state before the last change (Ctrl+Z)."""
+        if not self._pick_undo:
+            self.statusMessage.emit("Nothing to undo.")
+            return False
+        picks, pins, mask, verts = self._pick_undo.pop()
+        self.picks, self.pinned_picks = list(picks), list(pins)
+        self.select_mask, self._lasso_verts = mask, verts
+        self._validate_picks()     # a plane/binning swap may have changed the shape
+        self._refresh_decay()
+        self._refresh_image()
+        if self.w is not None and not self.w.pixel_dock.isHidden():
+            self._reflect_pick_in_list()
+        self.statusMessage.emit("Selection change undone.")
+        return True
+
     def _add_pick(self, pick: dict) -> None:
         # A new pick *replaces* the live one (single decay at a time). Pinned
         # picks (via Pin) stay overlaid for comparison.
+        self._snapshot_picks()
         if pick["kind"] != "mask":
             self.select_mask = None      # a hand-picked region supersedes the lasso
             self._lasso_verts = None
@@ -2015,6 +2072,7 @@ class ViewerController(QObject):
             self.statusMessage.emit("Click a pixel/region first, then Pin it.")
             return
         if len(self.pinned_picks) < len(_PICK_COLORS) - 1:
+            self._snapshot_picks(force=True)   # a pin change is always undoable
             self.pinned_picks.append(self.picks[0])
             self.picks = []
         self._refresh_decay()
@@ -2022,6 +2080,8 @@ class ViewerController(QObject):
         self.statusMessage.emit(f"Pinned {len(self.pinned_picks)} decay(s); click another to compare.")
 
     def _clear_picks(self) -> None:
+        if self._shown_picks() or self.select_mask is not None:
+            self._snapshot_picks(force=True)   # wiping everything deserves an undo
         self.picks = []
         self.pinned_picks = []
         self._end_hover(redraw=False)
@@ -2462,6 +2522,7 @@ class ViewerController(QObject):
 
     def _apply_pick_settings(self, s: dict) -> None:
         """Restore the saved picks, dropping any that no longer fit the model."""
+        self._snapshot_picks(force=True)       # loading settings is one undo step
         self.pinned_picks = [p for p in
                              (self._pick_from_recipe(d) for d in s.get("pinned_picks", []))
                              if p is not None]

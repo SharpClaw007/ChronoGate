@@ -852,6 +852,58 @@ def test_pixel_cursor_and_goto() -> None:
     print("OK: arrow-key pixel cursor steps/clamps; (row, col) jump selects exactly.")
 
 
+def test_pick_undo() -> None:
+    """Ctrl+Z for selections: a stray click must not cost a carefully built group.
+    Pixel-cursor walks coalesce into one history entry; pin and clear are always
+    undoable; an empty history refuses politely."""
+    w = _window()
+    c = w.controller
+    c._clear_picks()
+
+    # A stray click wipes a group; one undo restores it (mask AND spotlight).
+    c._on_pixel_rows([(10, 20), (11, 21), (12, 22)])
+    mask = c.picks[0]["mask"].copy()
+    c._add_pixel(50, 50)
+    assert c.select_mask is None
+    assert c.undo_pick() is True
+    assert c.picks and c.picks[0]["kind"] == "mask"
+    assert np.array_equal(c.picks[0]["mask"], mask)
+    assert c.select_mask is not None and c.mask_im.get_visible()
+
+    # Walking the pixel cursor is ONE history entry, not one per step.
+    c._add_pixel(60, 60)
+    c.nudge_pixel(0, 1)
+    depth = len(c._pick_undo)
+    c.nudge_pixel(0, 1)
+    c.nudge_pixel(1, 0)
+    assert len(c._pick_undo) == depth, "pixel-to-pixel steps must coalesce"
+    assert c.undo_pick() and c.picks[0] == {"kind": "pixel", "r": 60, "c": 60,
+                                            "label": "px(60,60)"}
+    assert c.undo_pick() and c.picks[0]["kind"] == "mask", \
+        "undoing past the walk lands back on the group"
+
+    # Pin and clear are each one undo step.
+    c._add_pixel(30, 30)
+    c._on_pin()
+    assert len(c.pinned_picks) == 1 and not c.picks
+    assert c.undo_pick()
+    assert not c.pinned_picks and c.picks[0]["r"] == 30, "undo un-pins"
+    c._clear_picks()
+    assert not c._shown_picks()
+    assert c.undo_pick()
+    assert c.picks and c.picks[0]["r"] == 30, "undo restores a cleared pick"
+
+    # Draining the history ends with a refusal, not a crash.
+    while c.undo_pick():
+        pass
+    assert c.undo_pick() is False
+
+    # The action is wired with a real shortcut.
+    assert not w.act_undo_pick.shortcut().isEmpty()
+    c._clear_picks()
+    print("OK: pick undo restores groups/pins/clears; pixel walks coalesce.")
+
+
 def test_pick_markers_on_image() -> None:
     """A picked pixel is invisible at 1/512 of the panel -- it needs a marker."""
     w = _window()
@@ -1260,6 +1312,7 @@ if __name__ == "__main__":
         test_settings_roundtrip_restores_selection()
         test_pin_glyph_is_in_the_plot_font()
         test_pixel_cursor_and_goto()
+        test_pick_undo()
         test_pick_markers_on_image()
         test_phasor_lasso_selection()
         test_fit_overlay()

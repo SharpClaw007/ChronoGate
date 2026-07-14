@@ -235,6 +235,11 @@ class MainWindow(QMainWindow):
             "short lifetimes apart and helps disambiguate multi-component mixtures. "
             "Each harmonic keeps its own reference calibration.")
 
+        self.act_undo_pick = QAction("&Undo selection change", self,
+                                     shortcut=QKeySequence.Undo)
+        self.act_undo_pick.setToolTip(
+            "Restore the previous selection -- a stray click must not cost a lasso.")
+
         self.act_about = QAction("&About ChronoGate", self)
         self.act_open.setToolTip("Open a .ptu file or stack layer")
         self.act_open_folder.setToolTip("Open a folder and load its .ptu stack")
@@ -262,6 +267,7 @@ class MainWindow(QMainWindow):
         m_view.addAction(self.act_phasor_cal_clear)
         m_view.addSeparator()
         m_view.addAction(self.act_pixels)
+        m_view.addAction(self.act_undo_pick)
         m_view.addSeparator()
         m_view.addAction(self.act_log)
         m_view.addAction(self.act_floor)
@@ -294,6 +300,7 @@ class MainWindow(QMainWindow):
         self.act_phasor_cal.triggered.connect(self.controller._on_phasor_calibrate)
         self.act_phasor_cal_clear.triggered.connect(self.controller.clear_phasor_calibration)
         self.act_harmonic2.toggled.connect(self.controller._on_harmonic2)
+        self.act_undo_pick.triggered.connect(self.controller.undo_pick)
         self.act_save.triggered.connect(self.filep.btn_save.click)
         self.act_load.triggered.connect(self.filep.btn_load.click)
         self.act_quit.triggered.connect(self.close)
@@ -379,7 +386,7 @@ class MainWindow(QMainWindow):
         for a in (self.act_export, self.act_batch, self.act_save, self.act_load,
                   self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log,
                   self.act_floor, self.act_pixels, self.act_phasor_cal,
-                  self.act_phasor_cal_clear, self.act_harmonic2):
+                  self.act_phasor_cal_clear, self.act_harmonic2, self.act_undo_pick):
             a.setEnabled(loaded)
         if not loaded:
             self.pixel_dock.hide()
