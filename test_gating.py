@@ -286,6 +286,64 @@ def test_mask_decay_pools_selected_pixels():
     print("OK: mask_decay pools an arbitrary pixel selection into one decay.")
 
 
+def test_metrics_rank_filters_and_sorts():
+    """The pixel list's ranking: filter on a metric, sort by it, take the top N."""
+    from chronogate import metrics
+
+    ny, nx, H = 4, 5, 16
+    counts = np.zeros((ny, nx, H), dtype=np.uint16)
+    # Give every pixel a distinct brightness: k = flat index + 1 photons in bins 4..7.
+    for r in range(ny):
+        for c in range(nx):
+            counts[r, c, 4:8] = r * nx + c + 1
+    cube = FlimCube(counts=counts, resolution_ns=0.1, period_ns=1.6, n_bins=H,
+                    record_type="synthetic", channel=0, n_channels=1,
+                    frame_mode="single frame", n_frames=1, n_photons=int(counts.sum()),
+                    path=Path("synthetic.ptu"))
+    m = gating.GatingModel(cube)
+    ctx = metrics.MetricContext(model=m, gate_a=(4, 7), gate_b=(8, 11))
+
+    # in_gate = 4 bins x k photons; the brightest pixel is the last one.
+    lo, hi = metrics.value_range(ctx, "in_gate")
+    assert (lo, hi) == (4.0, 4.0 * ny * nx), (lo, hi)
+
+    top = metrics.rank(ctx, "in_gate", limit=3)
+    assert top.rows[0] == (ny - 1, nx - 1), "the brightest pixel ranks first"
+    assert top.values["in_gate"][0] == 4.0 * ny * nx
+    assert [v for v in top.values["in_gate"]] == sorted(top.values["in_gate"], reverse=True)
+    assert top.n_matched == ny * nx and top.n_total == ny * nx
+    assert top.truncated and len(top.rows) == 3, "the top-N cut is reported, not hidden"
+
+    # Ascending gives the dimmest first.
+    assert metrics.rank(ctx, "in_gate", limit=1, descending=False).rows[0] == (0, 0)
+
+    # A range filter keeps only the pixels inside it.
+    band = metrics.rank(ctx, "in_gate", vmin=20.0, vmax=40.0, limit=100)
+    assert band.n_matched == len(band.rows) and not band.truncated
+    assert all(20.0 <= v <= 40.0 for v in band.values["in_gate"])
+
+    # A filter that matches nothing is empty, not an error.
+    assert metrics.rank(ctx, "in_gate", vmin=1e9).n_matched == 0
+
+    # NaN pixels (an undefined lifetime) are excluded from the ranking entirely.
+    tau = metrics.get("tau").compute(ctx)
+    assert not np.isfinite(tau).any(), "no photons in gate B -> tau is undefined"
+    assert metrics.rank(ctx, "tau", limit=10).n_matched == 0
+
+    # rld_gate_a lets the caller run RLD on a *different* early gate than the image's
+    # (the UI splits one wide gate into equal halves when no late gate is configured).
+    split = metrics.MetricContext(model=m, gate_a=(4, 7), rld_gate_a=(4, 5), gate_b=(6, 7))
+    assert split.rld_gates == ((4, 5), (6, 7))
+    assert np.array_equal(metrics.get("in_gate").compute(split),
+                          metrics.get("in_gate").compute(ctx)), "in_gate still uses gate_a"
+
+    # Every registered metric yields one (Y, X) column; a new one needs no UI change.
+    for met in metrics.metrics():
+        assert met.compute(ctx).shape == (ny, nx), met.key
+    assert metrics.get("in_gate").format(float("nan")) == "—"
+    print(f"OK: metric ranking filters/sorts/truncates ({len(metrics.metrics())} metrics registered).")
+
+
 if __name__ == "__main__":
     try:
         test_prefix_sum_matches_direct_sum()
@@ -297,6 +355,7 @@ if __name__ == "__main__":
         test_auto_floor_robust_to_rising_edge()
         test_phasor_mono_exponential_on_semicircle()
         test_mask_decay_pools_selected_pixels()
+        test_metrics_rank_filters_and_sorts()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

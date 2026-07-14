@@ -31,10 +31,10 @@ from matplotlib.path import Path as MplPath
 from matplotlib.widgets import LassoSelector, SpanSelector
 from matplotlib.patches import Rectangle
 
-from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker, QThread, QTimer
+from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker, QThread
 from PySide6.QtWidgets import QApplication, QFileDialog
 
-from .. import gating
+from .. import gating, metrics
 from ..loader import find_stack, load_ptu, FrameCache
 from ..export import export_all, load_settings, save_settings
 from . import theme
@@ -147,21 +147,20 @@ class ViewerController(QObject):
         self._press_xy = None
         self._press_data = None
 
-        # Hover probe: the decay of the pixel under the cursor, previewed without a
-        # click. Clicking locks it into `picks`; leaving the image drops it.
+        # Hover probe: the decay of the pixel under the cursor, drawn live as the
+        # mouse moves. Clicking locks it into `picks`; leaving the image drops it.
         #
-        # A full matplotlib redraw costs ~60 ms, so repainting the decay on every
-        # motion event would queue draws and feel like treacle. Instead each motion
-        # updates the (free) status-bar readout immediately, and the decay is drawn
-        # only once the cursor *settles* -- you don't want the decay of every pixel
-        # you swept past, only the one you stopped on.
+        # A full matplotlib redraw costs ~60 ms -- far too slow for a curve that has
+        # to track the cursor -- so a hover session is **blitted**: the static parts
+        # of the decay panel (axes, grid, gate, floor, pinned/locked decays) are
+        # rendered once and cached as a bitmap, and each frame only restores that
+        # bitmap and paints the handful of `animated` hover artists over it.
         self.hover_probe = True
         self.hover_pick: dict | None = None
         self._hover_rc = None
-        self.hover_delay_ms = 90
-        self._hover_timer = QTimer(self)
-        self._hover_timer.setSingleShot(True)
-        self._hover_timer.timeout.connect(self._hover_commit)
+        self._hovering = False        # a hover session is open (axes frozen for blit)
+        self._hover_bg = None         # the cached background bitmap
+        self._hover_fill = None       # per-frame gate shading under the hover curve
 
         # Phasor lasso: select pixels by *property* (their place in the phasor
         # cloud) rather than by location, then see them highlighted on the image.
@@ -178,6 +177,11 @@ class ViewerController(QObject):
         self._title_suffix = ""
         self._img_total = 0
         self._unit = "photons"
+
+        # Pixel list (the dock): rebuilt when the numbers change, not when the
+        # selection does -- clicking a row must not rebuild the table under it.
+        self._pixel_key = None
+        self._skip_pixel_list = False
 
         # Filled in when a file is loaded (see load_path).
         self.model = None
@@ -309,6 +313,23 @@ class ViewerController(QObject):
         self.floor_line = ax.axhline(0.0, color=theme.FLOOR, ls=":", lw=1.4,
                                      visible=False, label="_nolegend_")
 
+        # The hover artists. `animated=True` keeps them out of ordinary draws, so
+        # they never get baked into the cached blit background.
+        (self.hover_line,) = ax.plot([], [], color=theme.SELECT, lw=1.8,
+                                     drawstyle="steps-post", animated=True, visible=False,
+                                     label="_nolegend_", zorder=8)
+        (self.hover_fit_line,) = ax.plot([], [], color=theme.SELECT, lw=1.6, ls="--",
+                                         animated=True, visible=False,
+                                         label="_nolegend_", zorder=9)
+        self.hover_text = ax.text(
+            0.015, 0.03, "", transform=ax.transAxes, fontsize=8, color=theme.SELECT,
+            ha="left", va="bottom", animated=True, visible=False, zorder=10,
+            bbox=dict(boxstyle="round,pad=0.35", fc=theme.PANEL, ec=theme.SELECT,
+                      alpha=0.92, lw=0.8))
+        # Any real draw of the decay canvas invalidates the cached bitmap, so
+        # re-capture it there: resizes and stray refreshes then just work.
+        self.dc.mpl_connect("draw_event", self._on_decay_draw)
+
         # A placeholder image until a file is loaded; load_path sets real data.
         self.im = self.ic.ax.imshow(np.zeros((2, 2)), cmap=self._image_cmap("intensity"),
                                     interpolation="nearest", origin="upper")
@@ -383,6 +404,14 @@ class ViewerController(QObject):
         w.picks.col.editingFinished.connect(self._on_goto_pixel)
         w.picks.btn_clear.clicked.connect(self._clear_picks)
         w.picks.btn_pin.clicked.connect(self._on_pin)
+        w.pixels.metric.currentIndexChanged.connect(self._on_pixel_metric)
+        w.pixels.desc.toggled.connect(lambda _=None: self.refresh_pixel_list())
+        w.pixels.limit.valueChanged.connect(lambda _=None: self.refresh_pixel_list())
+        w.pixels.fmin.editingFinished.connect(self.refresh_pixel_list)
+        w.pixels.fmax.editingFinished.connect(self.refresh_pixel_list)
+        w.pixels.refreshRequested.connect(self.refresh_pixel_list)
+        w.pixels.pixelChosen.connect(self._on_pixel_row)
+        w.pixel_dock.visibilityChanged.connect(self._on_pixel_dock)
         w.binning.bin.valueChanged.connect(self._on_bin_size)
         w.binning.target.valueChanged.connect(self._on_bin_target)
         w.binning.btn_auto.clicked.connect(self._on_auto_bin)
@@ -580,10 +609,12 @@ class ViewerController(QObject):
         return float(gated[r0:r1, c0:c1].sum())
 
     def _active_pick(self) -> dict | None:
-        """The pick the readout speaks for: the hovered pixel if the cursor is over
-        the image, else the locked one."""
-        if self.hover_pick is not None:
-            return self.hover_pick
+        """The pick the image readout speaks for: the locked pixel/region/lasso.
+
+        The *hovered* pixel is deliberately not this -- it is reported on the decay
+        panel and the status bar, both of which update for free, while the image
+        title cannot be repainted at cursor speed.
+        """
         return self.picks[0] if len(self.picks) == 1 else None
 
     def _redraw_pick_lines(self) -> None:
@@ -605,8 +636,6 @@ class ViewerController(QObject):
             tag = self._pick_tag(pick)
             if pinned:
                 tag = "📌 " + tag
-            elif pick is self.hover_pick:
-                tag = "◦ " + tag        # a preview, not yet locked in
             raw = self._pick_decay(pick)
             shown = self._smooth(raw, self.smooth_bins)
             seg = raw[self.gate_lo_bin: self.gate_hi_bin + 1] - floor_pp
@@ -657,16 +686,15 @@ class ViewerController(QObject):
             if pick["kind"] == "mask":
                 continue          # shown as the translucent overlay instead
             color = _PICK_COLORS[i % len(_PICK_COLORS)]
-            hovering = pick is self.hover_pick
             r0, r1, c0, c1, _ = self._pick_region(pick)
             rect = Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0, facecolor="none",
-                             edgecolor=color, lw=1.4, ls=":" if hovering else "-", zorder=6)
+                             edgecolor=color, lw=1.4, zorder=6)
             ax.add_patch(rect)
             self._pick_markers.append(rect)
             if pick["kind"] == "pixel":
                 # A 1x1 box is sub-pixel on screen; a crosshair makes it findable.
                 (m,) = ax.plot([pick["c"]], [pick["r"]], marker="+", ms=13, mew=1.3,
-                               color=color, alpha=0.7 if hovering else 1.0, zorder=7)
+                               color=color, zorder=7)
                 self._pick_markers.append(m)
 
     def _redraw_mask_overlay(self, shape) -> None:
@@ -696,11 +724,14 @@ class ViewerController(QObject):
         res = self.model.resolution_ns
         x = self.model.cube.time_axis_ns
         ax = self.dc.ax
+        self._drop_hover_fill()      # a stale blit artist must not survive a real draw
         self.decay_line.set_data(x, self.model.decay.astype(float))
         self.t0_line.set_xdata([self.model.t0_ns(), self.model.t0_ns()])
         ax.set_xlim(0, x[-1] + res)
 
-        picks_mode = bool(self._shown_picks())
+        # A hover session draws per-pixel curves, so the panel must be in per-pixel
+        # units even with nothing picked.
+        picks_mode = bool(self._shown_picks()) or self._hovering
         self.decay_line.set_visible(not picks_mode)
         self._redraw_pick_lines()
 
@@ -708,6 +739,10 @@ class ViewerController(QObject):
             ax.set_ylabel("photons / pixel (mean)")
             floor_y = self._floor_per_pixel()
             data_max = self._picks_ymax
+            if self._hovering:
+                # Room for the brightest pixel in the image, so the frozen axis fits
+                # every curve the cursor can land on.
+                data_max = max(data_max, float(self.model.peak_counts_per_bin()))
         else:
             ax.set_ylabel("photons")
             # Per-pixel floor drawn at its equivalent total level on the summed decay.
@@ -735,7 +770,7 @@ class ViewerController(QObject):
             self.floor_line.set_visible(False)
 
         leg = ax.get_legend()
-        if picks_mode:
+        if self._pick_lines:      # hovering with nothing picked has no labelled artist
             ax.legend(fontsize=7, loc="upper right", framealpha=0.85)
         elif leg is not None:
             leg.remove()
@@ -751,6 +786,9 @@ class ViewerController(QObject):
         self._recolor_span()
         self._sync_gate_textboxes()
         self._redraw_gate_overlays()
+        # The cached bitmap is now stale; _on_decay_draw re-captures it on the
+        # next real draw, and _hover_draw forces one if it has to.
+        self._hover_bg = None
         self.dc.draw_idle()
 
     def _image_cmap(self, mode: str):
@@ -804,6 +842,8 @@ class ViewerController(QObject):
             self._refresh_phasor_image()
         else:
             self._refresh_intensity_image()
+        if not self._skip_pixel_list:
+            self.refresh_pixel_list()   # the numbers moved, so the ranking has too
 
     def _set_phasor_axes(self, on: bool) -> None:
         """Toggle the right panel between the image (colorbar, no ticks) and the
@@ -974,7 +1014,7 @@ class ViewerController(QObject):
         self._fit_image_axes(gated.shape)
         self._redraw_mask_overlay(gated.shape)
         self._redraw_pick_markers()
-        self.ic.ax.set_title(self._compose_title(), fontsize=9)
+        self._set_image_title(self._compose_title())
         self.ic.draw_idle()
         self._update_stats(gated, lo_ns, hi_ns)
 
@@ -985,15 +1025,28 @@ class ViewerController(QObject):
         if active is not None and self._gated is not None:
             sel = int(self._pick_total(active, self._gated))
             body = (f"{self._pick_tag(active)}: {sel:,} {self._unit} in gate"
-                    f"   ·   image {self._img_total:,}")
+                    f"  ·  image {self._img_total:,}")
         else:
             body = f"{self._img_total:,} {self._unit} in gate"
         return self._title_base + body + self._title_suffix
 
+    def _set_image_title(self, text: str) -> None:
+        """Set the image title, shrinking it if it would overrun the panel.
+
+        The image panel narrows a lot when the pixel-list dock opens, and a title
+        wider than the axes is clipped *from the left* -- eating the pixel
+        coordinates, the very thing the readout exists to show.
+        """
+        width_in = self.ic.ax.get_window_extent().width / self.ic.fig.dpi
+        longest = max((len(line) for line in text.split("\n")), default=0)
+        # ~0.6 * fontsize is the average glyph advance in points; 72 pt = 1 inch.
+        fits = (72.0 * width_in) / max(1, 0.6 * longest)
+        self.ic.ax.set_title(text, fontsize=max(6.5, min(9.0, fits)))
+
     def _update_image_title(self) -> None:
         """Restate the readout for the current pick without redoing the gate maths."""
         if self.mode == "intensity" and self._gated is not None:
-            self.ic.ax.set_title(self._compose_title(), fontsize=9)
+            self._set_image_title(self._compose_title())
 
     def _gated_channel(self, ch: int) -> np.ndarray:
         """Gated image for another channel of the current plane (cache-aware)."""
@@ -1330,7 +1383,7 @@ class ViewerController(QObject):
 
     # ------------------------------------------------------------- hover probe
     def _hover_at(self, event) -> None:
-        """Track the pixel under the cursor: read it out at once, draw it on settle."""
+        """Draw the decay of the pixel under the cursor, live, as the mouse moves."""
         if not self.hover_probe or self.model is None or self.mode == "phasor":
             return
         if event.inaxes is not self.ic.ax or event.xdata is None or event.ydata is None:
@@ -1342,45 +1395,120 @@ class ViewerController(QObject):
         if self._hover_rc == (r, c):
             return                      # still inside the same pixel: nothing to do
         self._hover_rc = (r, c)
-        if self.w is not None:          # instant, free: coordinates + counts, no redraw
+        self.hover_pick = {"kind": "pixel", "r": r, "c": c, "label": f"px({r},{c})"}
+        if not self._hovering:
+            self._hover_begin()
+        self._hover_draw()
+        if self.w is not None:
             self.w.set_probe(self._probe_text(r, c))
-        self._hover_timer.start(self.hover_delay_ms)   # the decay follows once you stop
 
     def _probe_text(self, r: int, c: int) -> str:
-        """The status-bar readout for the pixel under the cursor (no drawing)."""
+        """The status-bar readout for the pixel under the cursor."""
         parts = [f"px({r},{c})"]
         if self._gated is not None and self._gated.shape == self.model.intensity.shape:
             parts.append(f"{int(self._gated[r, c]):,} {self._unit} in gate")
         parts.append(f"{int(self.model.intensity[r, c]):,} total")
         return "   ·   ".join(parts)
 
-    def _hover_commit(self) -> None:
-        """The cursor settled: draw that pixel's decay as a preview."""
-        if not self.hover_probe or self.model is None or self._hover_rc is None:
+    def _hover_begin(self) -> None:
+        """Open a hover session: freeze the axes and cache the static background.
+
+        The y-range is pinned to the image-wide per-pixel maximum for the whole
+        session. That is required (a blit background bakes the axis in) and it is
+        also what you want: with a fixed scale, sweeping the image *shows* one pixel
+        being brighter than the last instead of the axis silently rescaling to hide it.
+        """
+        self._hovering = True
+        self._refresh_decay()      # per-pixel units + the frozen y-range
+        self.dc.draw()             # a real draw, so _on_decay_draw caches a background
+
+    def _on_decay_draw(self, _event=None) -> None:
+        """Re-cache the blit background after any real draw of the decay canvas."""
+        if self._hovering:
+            self._hover_bg = self.dc.copy_from_bbox(self.dc.fig.bbox)
+
+    def _drop_hover_fill(self) -> None:
+        if self._hover_fill is not None:
+            try:
+                self._hover_fill.remove()
+            except Exception:  # noqa: BLE001
+                pass
+            self._hover_fill = None
+
+    def _hover_draw(self) -> None:
+        """One blitted frame: restore the cached bitmap, paint the hover artists."""
+        if self._hover_bg is None:
+            self.dc.draw()                 # re-caches via the draw_event hook
+            if self._hover_bg is None:
+                return
+        ax = self.dc.ax
+        x = self.model.cube.time_axis_ns
+        pick = self.hover_pick
+        raw = self._pick_decay(pick)
+        shown = self._smooth(raw, self.smooth_bins)
+        floor_pp = (self._floor_per_pixel()
+                    if (self.apply_floor and self.noise_floor_pp > 0) else 0.0)
+
+        fit = (gating.fit_mono_exponential(x, raw, self.model.t0_ns(), floor_pp)
+               if self.fit_curve else None)
+        self.hover_line.set_data(x, shown)
+        self.hover_line.set_alpha(0.4 if fit else 1.0)
+        self.hover_line.set_visible(True)
+        if fit is not None:
+            self.hover_fit_line.set_data(
+                x, gating.mono_exponential_curve(x, self.model.t0_ns(), fit[0], fit[1], floor_pp))
+        self.hover_fit_line.set_visible(fit is not None)
+
+        # Shade the photons this pixel puts in the gate -- the same "area under the
+        # curve above the floor" the locked picks show.
+        self._drop_hover_fill()
+        lo_ns, hi_ns = gating.gate_bounds_ns(self.gate_lo_bin, self.gate_hi_bin,
+                                             self.model.resolution_ns)
+        in_gate = (x >= lo_ns) & (x < hi_ns)
+        self._hover_fill = ax.fill_between(
+            x, floor_pp, shown, where=in_gate & (shown > floor_pp), step="post",
+            color=theme.SELECT, alpha=0.22, lw=0, animated=True, zorder=7)
+
+        self.hover_text.set_text(self._hover_summary(pick, fit))
+        self.hover_text.set_visible(True)
+
+        self.dc.restore_region(self._hover_bg)
+        for art in (self._hover_fill, self.hover_line, self.hover_fit_line, self.hover_text):
+            if art is not None and art.get_visible():
+                ax.draw_artist(art)
+        self.dc.blit(self.dc.fig.bbox)
+
+    def _hover_summary(self, pick: dict, fit) -> str:
+        """The live label pinned to the decay panel while hovering."""
+        r, c = pick["r"], pick["c"]
+        tag = self._pick_tag(pick)
+        parts = [tag]
+        if self._gated is not None and self._gated.shape == self.model.intensity.shape:
+            parts.append(f"{int(self._pick_total(pick, self._gated)):,} {self._unit} in gate")
+        parts.append(f"{int(self.model.intensity[r, c]):,} total")
+        if fit is not None:
+            parts.append(f"τ≈{fit[1]:.2f} ns")
+        return "   ·   ".join(parts)
+
+    def _end_hover(self, redraw: bool = True) -> None:
+        """Close the hover session and restore the ordinary (autoscaled) decay."""
+        self._hover_rc = None
+        self.hover_pick = None
+        if not self._hovering:
             return
-        r, c = self._hover_rc
-        self.hover_pick = {"kind": "pixel", "r": r, "c": c, "label": f"px({r},{c})"}
-        self._hover_refresh()
+        self._hovering = False
+        self._hover_bg = None
+        self._drop_hover_fill()
+        for art in (self.hover_line, self.hover_fit_line, self.hover_text):
+            art.set_visible(False)
+        if redraw:
+            self._refresh_decay()
 
     def _on_image_leave(self, event=None) -> None:
         """Cursor left the image: drop the preview, fall back to the locked pick."""
-        self._hover_timer.stop()
-        self._hover_rc = None
         if self.w is not None:
             self.w.set_probe("")
-        if self.hover_pick is None:
-            return
-        self.hover_pick = None
-        self._hover_refresh()
-
-    def _hover_refresh(self) -> None:
-        """The cheap half of a refresh: the decay, the readout line and the markers.
-        The gated image doesn't depend on the pick, so it is never recomputed here."""
-        self._refresh_decay()
-        if self.mode != "phasor":
-            self._update_image_title()
-            self._redraw_pick_markers()
-            self.ic.draw_idle()
+        self._end_hover()
 
     def _on_hover_probe(self, checked) -> None:
         self.hover_probe = bool(checked)
@@ -1425,21 +1553,29 @@ class ViewerController(QObject):
             self.phasor_mask = None      # a hand-picked region supersedes the lasso
             self._lasso_verts = None
         self.picks = [pick]
-        self._hover_timer.stop()         # a queued preview must not override the click
-        self.hover_pick = None           # the click locks in what was previewed
-        self._hover_rc = None
+        self._end_hover(redraw=False)    # the click locks in what was being previewed
         if self.w is not None and pick["kind"] == "pixel":
             self.w.picks.set_coords(pick["r"], pick["c"])
             self.ic.setFocus()           # so the arrow-key pixel cursor works at once
         self._refresh_decay()
-        self._refresh_image()            # readout, markers and any lasso overlay
+        # Selecting a pixel must not rebuild the pixel list under the row you clicked.
+        self._skip_pixel_list = True
+        try:
+            self._refresh_image()        # readout, markers and any lasso overlay
+        finally:
+            self._skip_pixel_list = False
+        if self.w is not None and pick["kind"] == "pixel":
+            self.w.pixels.select_pixel(pick["r"], pick["c"])
         self.statusMessage.emit(f"Showing decay for {pick['label']}.")
 
     def _shown_picks(self) -> list:
-        """Pinned picks plus the live one, in draw order. A hover *previews* over the
-        locked pick, so the panel shows exactly one un-pinned decay either way."""
-        live = [self.hover_pick] if self.hover_pick is not None else self.picks
-        return self.pinned_picks + live
+        """Pinned picks plus the locked one, in draw order.
+
+        The hovered pixel is *not* here: it is a blitted overlay drawn on top of
+        these, so you compare the pixel under the cursor against your locked
+        reference rather than replacing it.
+        """
+        return self.pinned_picks + self.picks
 
     def _validate_picks(self) -> None:
         """Drop picks that no longer fit the model (a new plane/channel can differ
@@ -1455,7 +1591,8 @@ class ViewerController(QObject):
 
         self.picks = [p for p in self.picks if ok(p)]
         self.pinned_picks = [p for p in self.pinned_picks if ok(p)]
-        self.hover_pick = None
+        self._end_hover(redraw=False)
+        self._pixel_key = None      # the metrics are on a new scale: reseed the filter
         if self.phasor_mask is not None and self.phasor_mask.shape != (ny, nx):
             self.phasor_mask = None
             self._lasso_verts = None
@@ -1479,6 +1616,79 @@ class ViewerController(QObject):
             return
         self._add_pixel(self.w.picks.row.value(), self.w.picks.col.value())
 
+    # -------------------------------------------------------------- pixel list
+    def _rld_gates(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        """The two gates the τ metric uses.
+
+        In lifetime mode they are the user's A/B gates, so the τ column matches the
+        τ map exactly. Otherwise no late gate has ever been configured (B starts out
+        equal to A, which makes Δt = 0 and every τ undefined), so fall back to
+        splitting the current gate into equal early/late halves -- which is just the
+        same two-gate RLD estimator applied to the gate you are actually using.
+        """
+        a = tuple(sorted((self.gate_lo_bin, self.gate_hi_bin)))
+        b = tuple(sorted((self.gateB_lo_bin, self.gateB_hi_bin)))
+        if self._lifetime_init and b[0] > a[0]:
+            return a, b
+        half = (a[1] - a[0] + 1) // 2
+        if half < 1:
+            return a, b
+        return (a[0], a[0] + half - 1), (a[0] + half, a[0] + 2 * half - 1)
+
+    def _metric_ctx(self) -> metrics.MetricContext:
+        """The current analysis settings, packaged for the metric functions."""
+        gate_a, gate_b = self._rld_gates()
+        return metrics.MetricContext(
+            model=self.model,
+            gate_a=(self.gate_lo_bin, self.gate_hi_bin),   # the gate the image shows
+            gate_b=gate_b,
+            rld_gate_a=gate_a,
+            floor_per_bin=self._floor_per_pixel() if self.apply_floor else 0.0,
+            rld_min_counts=self.rld_min_counts,
+            phasor_fn=self._phasor_maps,     # the cached (g, s) maps
+        )
+
+    def refresh_pixel_list(self) -> None:
+        """Re-rank the pixels for the current gate. A no-op while the dock is closed,
+        so the ranking never costs anything unless you are looking at it."""
+        if self.model is None or self.w is None or self.w.pixel_dock.isHidden():
+            return
+        p = self.w.pixels
+        key = p.current_metric()
+        if self._pixel_key != key:
+            self._seed_pixel_filter(key)   # calls back into here once seeded
+            return
+        table = metrics.rank(self._metric_ctx(), key,
+                             vmin=p.fmin.value(), vmax=p.fmax.value(),
+                             limit=p.limit.value(), descending=p.desc.isChecked())
+        p.set_table(table, {m.key: m for m in metrics.metrics()})
+        if len(self.picks) == 1 and self.picks[0]["kind"] == "pixel":
+            p.select_pixel(self.picks[0]["r"], self.picks[0]["c"])
+
+    def _seed_pixel_filter(self, key: str) -> None:
+        """Reset the range filter to a metric's full span, so switching metric (or
+        reloading a file) can never leave a bound from the *old* scale silently
+        filtering every pixel out."""
+        p = self.w.pixels
+        self._pixel_key = key
+        lo, hi = metrics.value_range(self._metric_ctx(), key)
+        p.set_filter_bounds(lo, hi)
+        with _blocked(p.desc):
+            p.desc.setChecked(metrics.get(key).descending)
+        self.refresh_pixel_list()
+
+    def _on_pixel_metric(self, _idx=None) -> None:
+        self._pixel_key = None          # force a reseed for the newly chosen metric
+        self.refresh_pixel_list()
+
+    def _on_pixel_dock(self, visible: bool) -> None:
+        if visible:
+            self.refresh_pixel_list()
+
+    def _on_pixel_row(self, r: int, c: int) -> None:
+        """A row was chosen (clicked, or walked to with the arrow keys)."""
+        self._add_pixel(int(r), int(c))
+
     def _on_pin(self) -> None:
         """Freeze the live decay so the next click can be compared against it."""
         if not self.picks:
@@ -1494,9 +1704,7 @@ class ViewerController(QObject):
     def _clear_picks(self) -> None:
         self.picks = []
         self.pinned_picks = []
-        self._hover_timer.stop()
-        self.hover_pick = None
-        self._hover_rc = None
+        self._end_hover(redraw=False)
         self.phasor_mask = None
         self._lasso_verts = None
         self._refresh_decay()
@@ -1766,8 +1974,8 @@ class ViewerController(QObject):
         self._apply_manual_t0()
         self.picks = []
         self.pinned_picks = []
-        self.hover_pick = None
-        self._hover_rc = None
+        self._end_hover(redraw=False)
+        self._pixel_key = None
         self.phasor_mask = None
         self._lasso_verts = None
         self.threshold = 0

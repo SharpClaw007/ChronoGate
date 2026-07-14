@@ -32,21 +32,44 @@ in real time.
 
 ---
 
-## New in v0.6 — inspecting individual pixels
+## New in v0.7 — inspecting individual pixels
 
 A 512×512 image in a ~400 px panel means one screen pixel ≈ 1.3 data pixels, so
-clicking simply cannot land on a chosen pixel. Four ways to get at one properly:
+clicking simply cannot land on a chosen pixel. Five ways to get at one properly:
 
-- **Hover probe:** move over the image and the status bar reads out that pixel's
-  coordinates and photons-in-gate *instantly*; stop for a moment and its decay is
-  drawn. Click to lock it in. (Sweeping is free — the plot is only repainted once
-  the cursor settles, so a fast pass over 500 pixels doesn't repaint 500 times.)
+- **Hover probe:** move the cursor over the image and that pixel's decay is drawn
+  **live**, in magenta, over your locked/pinned reference curves — with its
+  coordinates, photons-in-gate, total and (optionally) fitted τ in a label pinned
+  to the plot. It runs at ~160 fps because a hover **blits**: the static parts of
+  the panel are rendered once and cached, and each frame repaints only the hover
+  artists over that bitmap (a full matplotlib redraw is ~60 ms — 10 fps — and
+  would make the curve lag the mouse badly). The y-axis is frozen for the sweep,
+  so a brighter pixel visibly *is* brighter instead of the axis rescaling to hide
+  it. Click to lock the pixel in.
+- **Pixel list** (`Ctrl+P`, or View ▸ Pixel list): a **ranked, filterable table**
+  of individual pixels — by photons in gate, total photons, apparent τ, or phasor
+  g/s. Bound the metric to a range, take the top N, and click a row (or walk the
+  ranking with ↑/↓) to select that pixel. This is the answer to "show me the
+  brightest / longest-lived pixels", which no amount of clicking gets you.
+  Columns come from a metrics registry — see below.
 - **Arrow-key pixel cursor:** with a pixel selected, the arrow keys step it one
   pixel at a time (**Shift** = 10), with a crosshair marking it on the image.
 - **Go to (row, col):** type an exact pixel — precise and reproducible in a caption.
 - **Phasor lasso:** drag a loop around a cluster in the phasor plot and those
   pixels are selected **by lifetime signature rather than by location** — tinted
   magenta on the image (everything else veiled) with their pooled decay on the left.
+
+### Adding a pixel metric
+
+The pixel list's columns, sort keys and filters all come from the registry in
+`chronogate/metrics.py`. A new quantity is **one function** — no changes to the
+panel, the controller, or the table:
+
+```python
+@register("peak_bin", "peak bin", fmt="{:.0f}")
+def _peak_bin(ctx):
+    return ctx.model._counts.argmax(axis=-1).astype(float)   # (Y, X), NaN where undefined
+```
 
 ## New in v0.5
 
@@ -231,8 +254,8 @@ two-gate RLD map; the **Edit gate: A / B** radio (and the same ns boxes) then
 targets whichever gate you want to move.
 
 **Shortcuts:** `Ctrl+O` open · `Ctrl+E` export · `Ctrl+S/L` save/load settings ·
-`I`/`T`/`P` intensity/lifetime/phasor · `L` log-Y · `F` subtract floor ·
-`C` clear picks · `PgUp`/`PgDn` step z-slice.
+`I`/`T`/`P` intensity/lifetime/phasor · `Ctrl+P` pixel list · `L` log-Y ·
+`F` subtract floor · `C` clear picks · `PgUp`/`PgDn` step z-slice.
 
 The **arrow keys act on the plot you are working in**, so they never get swallowed
 by a spin box: on the **image** they step the selected pixel (`Shift` = 10 px at a

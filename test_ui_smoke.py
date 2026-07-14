@@ -319,77 +319,134 @@ def test_threaded_decode() -> None:
     print("OK: background (QThread) decode delivers the model and joins cleanly.")
 
 
-def _settle(c, w, ax, xdata, ydata):
-    """Move the cursor to a pixel and let the hover debounce fire."""
-    from PySide6.QtCore import QCoreApplication
-    import time
-    c._on_image_motion(_FakeEvent(ax, 0, 0, xdata, ydata))
-    deadline = time.monotonic() + 2.0
-    while c._hover_timer.isActive() and time.monotonic() < deadline:
-        QCoreApplication.processEvents()
-
-
-def test_hover_probe() -> None:
-    """Moving the cursor over the image previews that pixel's decay -- no click.
-
-    The readout is instant on every motion; the decay is drawn once the cursor
-    settles (a full redraw is ~60 ms, far too slow to run on every motion event).
-    """
+def test_hover_probe_blits() -> None:
+    """The hover curve tracks the cursor live -- drawn by blitting, not a full redraw."""
     w = _window()
     c = w.controller
     ax = c.ic.ax
-    assert c.hover_probe and not c._shown_picks()
+    assert c.hover_probe and not c._hovering
+    assert c.hover_line.get_animated(), "hover artists must be animated (kept out of "\
+                                        "ordinary draws, so the blit background is clean)"
+    assert not c.hover_line.get_visible()
 
-    # A motion event: the status readout is immediate, the decay is only queued.
+    # One motion opens a hover session: the axes freeze and the curve is painted.
     c._on_image_motion(_FakeEvent(ax, 0, 0, 33.0, 22.0))
+    assert c._hovering and c._hover_bg is not None, "the static background is cached"
     assert c._hover_rc == (22, 33)
-    assert c._hover_timer.isActive(), "the decay redraw is debounced, not run inline"
-    assert c.hover_pick is None, "nothing is drawn until the cursor settles"
-    probe = w.probe_label.text()
-    assert probe.startswith("px(22,33)") and "in gate" in probe, probe
-    assert f"{int(c._gated[22, 33]):,}" in probe, "the readout quotes that pixel's counts"
-
-    # Once it settles, the preview appears -- without locking anything in.
-    _settle(c, w, ax, 33.0, 22.0)
     assert c.hover_pick == {"kind": "pixel", "r": 22, "c": 33, "label": "px(22,33)"}
-    assert len(c._shown_picks()) == 1, "the hovered pixel's decay is drawn"
-    assert not c.picks, "a hover must NOT lock the pick in"
-    assert "px(22,33)" in c.ic.ax.get_title(), "the image readout follows the cursor"
+    assert c.hover_line.get_visible() and c.hover_line.get_xdata().size == c.model.n_bins
+    assert np.allclose(c.hover_line.get_ydata(),
+                       c._smooth(c.model.pixel_decay(22, 23, 33, 34), c.smooth_bins))
+    assert "px(22,33)" in c.hover_text.get_text() and "in gate" in c.hover_text.get_text()
+    probe = w.probe_label.text()
+    assert probe.startswith("px(22,33)") and f"{int(c._gated[22, 33]):,}" in probe, probe
 
-    # Staying inside the same pixel is free; a new pixel re-arms the preview.
-    c._hover_timer.stop()
-    c._on_image_motion(_FakeEvent(ax, 0, 0, 33.2, 22.1))
-    assert not c._hover_timer.isActive(), "staying inside a pixel must not re-render"
-    _settle(c, w, ax, 90.0, 80.0)
+    # The hovered pixel is NOT a pick: it draws over the locked/pinned decays.
+    assert not c.picks and not c._shown_picks()
+
+    # The frozen y-range must fit the brightest pixel in the image, so the axis
+    # never rescales mid-sweep (which would invalidate the cached background).
+    assert c.dc.ax.get_ylim()[1] >= c.model.peak_counts_per_bin()
+    ylim = c.dc.ax.get_ylim()
+
+    # Moving to another pixel repaints the curve without re-doing the axes.
+    c._on_image_motion(_FakeEvent(ax, 0, 0, 90.0, 80.0))
     assert c.hover_pick["r"] == 80 and c.hover_pick["c"] == 90
+    assert c.dc.ax.get_ylim() == ylim, "the axis must stay frozen across the sweep"
+    assert np.allclose(c.hover_line.get_ydata(),
+                       c._smooth(c.model.pixel_decay(80, 81, 90, 91), c.smooth_bins))
 
-    # Leaving the image drops the preview and both readouts revert.
+    # Staying inside the same pixel is free.
+    rc = c._hover_rc
+    c._on_image_motion(_FakeEvent(ax, 0, 0, 90.2, 80.1))
+    assert c._hover_rc == rc
+
+    # Leaving closes the session: the hover artists go away and the axes unfreeze.
     c._on_image_leave()
-    assert c.hover_pick is None and not c._shown_picks()
-    assert w.probe_label.text() == "" and "px(" not in c.ic.ax.get_title()
+    assert not c._hovering and c.hover_pick is None and c._hover_bg is None
+    assert not c.hover_line.get_visible() and c._hover_fill is None
+    assert w.probe_label.text() == ""
 
-    # A click locks the pixel in; hovering then previews *over* it, not beside it.
+    # A click locks the hovered pixel in and closes the session.
+    c._on_image_motion(_FakeEvent(ax, 0, 0, 50.0, 50.0))
+    assert c._hovering
     c._add_pixel(50, 50)
-    assert len(c.picks) == 1 and c.hover_pick is None
-    _settle(c, w, ax, 33.0, 22.0)
-    assert len(c._shown_picks()) == 1, "the preview replaces, not stacks on, the locked pick"
-    assert c._shown_picks()[0] is c.hover_pick and c.picks[0]["r"] == 50
+    assert not c._hovering and c.hover_pick is None
+    assert len(c.picks) == 1 and c.picks[0]["r"] == 50
+    assert "px(50,50)" in c.ic.ax.get_title(), "the image readout reports the LOCKED pick"
+
+    # Hovering over a locked pick draws on top of it, it does not replace it.
+    c._on_image_motion(_FakeEvent(ax, 0, 0, 33.0, 22.0))
+    assert c._shown_picks() == c.picks, "the locked decay stays on the panel while hovering"
+    assert c.hover_line.get_visible(), "...with the hovered pixel blitted over it"
     c._on_image_leave()
-    assert c._shown_picks()[0] is c.picks[0], "the locked pick returns when the cursor leaves"
 
-    # A click while a preview is queued must win (no stale preview lands after it).
-    c._on_image_motion(_FakeEvent(ax, 0, 0, 200.0, 200.0))
-    assert c._hover_timer.isActive()
-    c._add_pixel(11, 11)
-    assert not c._hover_timer.isActive(), "the click cancels the queued preview"
-    assert c.hover_pick is None and c.picks[0]["r"] == 11
-
-    # Turning hover off stops the preview entirely.
+    # Hover off = no session at all.
     w.picks.hover.setChecked(False)
     c._on_image_motion(_FakeEvent(ax, 0, 0, 33.0, 22.0))
-    assert not c._hover_timer.isActive() and c.hover_pick is None, "hover off -> no preview"
+    assert not c._hovering and c.hover_pick is None, "hover off -> no preview"
     w.picks.hover.setChecked(True)
-    print("OK: hover reads out instantly, previews the decay on settle, click locks it in.")
+    print("OK: hover blits the pixel's decay live; axis frozen; click locks it in.")
+
+
+def test_pixel_list() -> None:
+    """The ranked, filterable pixel table."""
+    from PySide6.QtWidgets import QApplication
+    from chronogate import metrics
+    w = _window()
+    c = w.controller
+    p = w.pixels
+    w.show()                     # a dock only signals its visibility on a live window
+    QApplication.instance().processEvents()
+
+    # Closed by default and free while closed: no ranking is computed.
+    assert not w.pixel_dock.isVisible()
+    c.refresh_pixel_list()
+    assert p.table.rowCount() == 0, "a closed dock must not cost anything"
+
+    w.act_pixels.trigger()       # View ▸ Pixel list -> seeds the filter and ranks
+    QApplication.instance().processEvents()
+    assert w.pixel_dock.isVisible()
+    assert p.table.rowCount() > 0, "opening the dock populates the list"
+    assert p.current_metric() == "in_gate"
+    # The columns are driven by the metrics registry, not hard-coded here.
+    headers = [p.table.horizontalHeaderItem(i).text() for i in range(p.table.columnCount())]
+    assert headers[:2] == ["row", "col"]
+    assert len(headers) == 2 + len(metrics.metrics())
+
+    # Ranked high->low by photons in gate: row 0 IS the brightest pixel in the gate.
+    r0, c0 = int(p.table.item(0, 0).text()), int(p.table.item(0, 1).text())
+    best = np.unravel_index(int(c._gated.argmax()), c._gated.shape)
+    assert (r0, c0) == (int(best[0]), int(best[1])), (r0, c0, best)
+    assert p.table.rowCount() == p.limit.value(), "the list shows the top N"
+    assert "truncated" in p.summary.text(), "a top-N cut is stated, not hidden"
+
+    # Choosing a row selects that pixel: decay, crosshair and readout all follow.
+    p.table.selectRow(3)
+    r3, c3 = int(p.table.item(3, 0).text()), int(p.table.item(3, 1).text())
+    assert c.picks and (c.picks[0]["r"], c.picks[0]["c"]) == (r3, c3)
+    assert f"px({r3},{c3})" in c.ic.ax.get_title()
+    assert len(c._pick_markers) == 2, "the chosen pixel is marked on the image"
+    # ...and selecting a pixel elsewhere highlights its row rather than rebuilding.
+    c._add_pixel(r0, c0)
+    assert p.table.selectionModel().selectedRows()[0].row() == 0
+
+    # A range filter narrows the list to pixels inside the band.
+    p.fmin.setValue(1.0)
+    p.fmax.setValue(3.0)
+    c.refresh_pixel_list()
+    vals = [float(p.table.item(i, 2).text().replace(",", "")) for i in range(p.table.rowCount())]
+    assert vals and all(1.0 <= v <= 3.0 for v in vals), vals
+
+    # Switching metric reseeds the bounds to the new scale (a stale 1..3 filter on
+    # phasor g would otherwise match nothing).
+    p.metric.setCurrentIndex([m.key for m in metrics.metrics()].index("total"))
+    assert p.current_metric() == "total" and p.table.rowCount() > 0
+    lo, hi = metrics.value_range(c._metric_ctx(), "total")
+    assert abs(p.fmin.value() - lo) < 1e-6 and abs(p.fmax.value() - hi) < 1e-6
+
+    w.pixel_dock.hide()
+    print("OK: pixel list ranks/filters/truncates; a row selects that pixel.")
 
 
 def test_pixel_cursor_and_goto() -> None:
@@ -531,7 +588,8 @@ if __name__ == "__main__":
         test_welcome_state_and_folder_load()
         test_lifetime_export_and_settings_roundtrip()
         test_picks_and_keyboard_helpers()
-        test_hover_probe()
+        test_hover_probe_blits()
+        test_pixel_list()
         test_pixel_cursor_and_goto()
         test_pick_markers_on_image()
         test_phasor_lasso_selection()

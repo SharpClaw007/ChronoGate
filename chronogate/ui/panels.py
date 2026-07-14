@@ -15,7 +15,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QRadioButton,
-    QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 INTENSITY_CMAPS = ["viridis", "gray", "magma", "inferno", "cividis"]
@@ -384,6 +384,156 @@ class PicksPanel(QGroupBox):
             it = QListWidgetItem(text)
             it.setForeground(QColor(color))
             self.list.addItem(it)
+
+
+class PixelListPanel(QWidget):
+    """A ranked, filterable table of individual pixels.
+
+    262,144 rows is not a list anyone can use, so this is never a raw dump: pick a
+    metric, bound it, and see the top N pixels by it. Selecting a row selects that
+    pixel (its decay, crosshair and readout follow), and the arrow keys walk the
+    ranking -- which is the point: stepping through the *brightest* or
+    *longest-lived* pixels, not through arbitrary coordinates.
+
+    The columns come from :mod:`chronogate.metrics`, so a new metric registered
+    there appears here with no change to this file.
+    """
+
+    pixelChosen = Signal(int, int)      # (row, col) of the pixel to select
+    refreshRequested = Signal()
+
+    def __init__(self, metrics: list):
+        super().__init__()
+        self._metrics = metrics
+        self._rows: list[tuple[int, int]] = []
+
+        self.metric = QComboBox()
+        for m in metrics:
+            self.metric.addItem(m.label, m.key)
+        self.metric.setToolTip("Rank and filter the pixels by this quantity.")
+        self.desc = QCheckBox("high→low")
+        self.desc.setChecked(True)
+        self.desc.setToolTip("Sort direction.")
+        self.fmin = QDoubleSpinBox()
+        self.fmax = QDoubleSpinBox()
+        for s in (self.fmin, self.fmax):
+            s.setDecimals(3)
+            s.setRange(-1e12, 1e12)
+            s.setButtonSymbols(QDoubleSpinBox.NoButtons)
+            s.setMaximumWidth(90)
+            s.setToolTip("Keep only pixels whose value falls in this range "
+                         "(defaults to the metric's full range = no filter).")
+        self.limit = QSpinBox()
+        self.limit.setRange(1, 20000)
+        self.limit.setValue(200)
+        self.limit.setMaximumWidth(74)
+        self.limit.setToolTip("How many top-ranked pixels to list.")
+        self.btn_refresh = QPushButton("Refresh")
+        self.btn_refresh.setToolTip("Recompute the ranking for the current gate.")
+
+        self.table = QTableWidget(0, 0)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setToolTip("Click a row (or walk it with ↑/↓) to select that pixel.")
+        self.table.itemSelectionChanged.connect(self._emit_selection)
+
+        self.summary = _muted("")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        top.addWidget(QLabel("rank by"))
+        top.addWidget(self.metric, 1)
+        top.addWidget(self.desc)
+        lay.addLayout(top)
+        rng = QHBoxLayout()
+        rng.setSpacing(6)
+        rng.addWidget(QLabel("from"))
+        rng.addWidget(self.fmin)
+        rng.addWidget(QLabel("to"))
+        rng.addWidget(self.fmax)
+        rng.addSpacing(8)
+        rng.addWidget(QLabel("top"))
+        rng.addWidget(self.limit)
+        rng.addWidget(self.btn_refresh)
+        rng.addStretch(1)
+        lay.addLayout(rng)
+        lay.addWidget(self.table, 1)
+        lay.addWidget(self.summary)
+
+        self.btn_refresh.clicked.connect(self.refreshRequested)
+
+    def current_metric(self) -> str:
+        return self.metric.currentData()
+
+    def set_filter_bounds(self, lo: float, hi: float) -> None:
+        """Reset the range boxes to a metric's full span (i.e. filter nothing).
+
+        Rounded **outward** to the boxes' displayed precision: a spin box holding
+        48.947 for a true maximum of 48.9474 would otherwise quietly filter out the
+        very brightest pixel -- the one you opened the list to find.
+        """
+        step = 10.0 ** -self.fmin.decimals()
+        with QSignalBlocker(self.fmin), QSignalBlocker(self.fmax):
+            self.fmin.setValue(math.floor(lo / step) * step)
+            self.fmax.setValue(math.ceil(hi / step) * step)
+
+    def set_table(self, table, metric_by_key: dict) -> None:
+        """Render a :class:`chronogate.metrics.PixelTable`."""
+        self._rows = list(table.rows)
+        headers = ["row", "col"] + [metric_by_key[k].label for k in table.keys]
+        self.table.clear()
+        self.table.setColumnCount(len(headers))
+        self.table.setRowCount(len(table.rows))
+        self.table.setHorizontalHeaderLabels(headers)
+        with QSignalBlocker(self.table):
+            for i, (r, c) in enumerate(table.rows):
+                self.table.setItem(i, 0, QTableWidgetItem(str(r)))
+                self.table.setItem(i, 1, QTableWidgetItem(str(c)))
+                for j, key in enumerate(table.keys):
+                    text = metric_by_key[key].format(float(table.values[key][i]))
+                    item = QTableWidgetItem(text)
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self.table.setItem(i, 2 + j, item)
+        self.table.resizeColumnsToContents()
+        shown = len(table.rows)
+        if table.n_matched == 0:
+            # Say why it is empty. "0 of 0" on its own reads like a bug.
+            label = metric_by_key[table.sort_key].label
+            self.summary.setText(
+                f"No pixel has a usable “{label}” in this range — widen the from/to "
+                f"bounds, or pool photons (Binning ▸ Auto) if the value is undefined.")
+            return
+        note = f"{shown:,} shown of {table.n_matched:,} matched · {table.n_total:,} px"
+        if table.truncated:
+            note += f"  (truncated to the top {shown:,})"
+        self.summary.setText(note)
+
+    def select_pixel(self, r: int, c: int) -> bool:
+        """Highlight the row for pixel (r, c) if it is in the list. No signal."""
+        try:
+            i = self._rows.index((int(r), int(c)))
+        except ValueError:
+            with QSignalBlocker(self.table):
+                self.table.clearSelection()
+            return False
+        with QSignalBlocker(self.table):
+            self.table.selectRow(i)
+            self.table.scrollToItem(self.table.item(i, 0))
+        return True
+
+    def _emit_selection(self) -> None:
+        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
+        if not rows:
+            return
+        i = rows[0].row()
+        if 0 <= i < len(self._rows):
+            self.pixelChosen.emit(*self._rows[i])
 
 
 class BinningPanel(QGroupBox):

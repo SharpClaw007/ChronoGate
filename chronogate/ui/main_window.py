@@ -13,10 +13,12 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
+    QDockWidget, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QProgressBar, QPushButton, QScrollArea, QSplitter, QStackedWidget,
+    QVBoxLayout, QWidget,
 )
 
+from .. import metrics
 from . import panels
 from .controller import ViewerController
 from .icon import app_icon
@@ -84,7 +86,9 @@ class MainWindow(QMainWindow):
         self.binning = panels.BinningPanel()
         self.filep = panels.FilePanel()
         self.stats = panels.StatsPanel()
+        self.pixels = panels.PixelListPanel(metrics.metrics())
 
+        self._build_pixel_dock()   # before the actions: one of them is its toggle
         self._build_actions()
 
         # --- workspace: plots (top) over a controls rack (bottom), both resizable ---
@@ -173,6 +177,18 @@ class MainWindow(QMainWindow):
         self._controls_rack = scroll
         return scroll
 
+    def _build_pixel_dock(self) -> QDockWidget:
+        """The pixel list lives in a dock: a table needs vertical room the bottom
+        controls rack does not have, and it is an occasional tool, not a constant one."""
+        dock = QDockWidget("Pixel list", self)
+        dock.setObjectName("PixelDock")
+        dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        dock.setWidget(self.pixels)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        dock.hide()                       # opt-in (View ▸ Pixel list, or Ctrl+P)
+        self.pixel_dock = dock
+        return dock
+
     def _build_actions(self) -> None:
         self.act_open = QAction("&Open .ptu…", self, shortcut=QKeySequence.Open)
         self.act_open_folder = QAction("Open &folder (stack)…", self,
@@ -198,6 +214,10 @@ class MainWindow(QMainWindow):
         self.act_log.setChecked(True)
         self.act_floor = QAction("Subtract noise &floor", self, checkable=True, shortcut=QKeySequence("F"))
         self.act_floor.setChecked(True)
+        self.act_pixels = self.pixel_dock.toggleViewAction()
+        self.act_pixels.setText("Pi&xel list")
+        self.act_pixels.setShortcut(QKeySequence("Ctrl+P"))
+        self.act_pixels.setToolTip("A ranked, filterable table of individual pixels")
 
         self.act_about = QAction("&About ChronoGate", self)
         self.act_open.setToolTip("Open a .ptu file or stack layer")
@@ -222,6 +242,8 @@ class MainWindow(QMainWindow):
         m_view.addAction(self.act_lifetime)
         m_view.addAction(self.act_phasor)
         m_view.addSeparator()
+        m_view.addAction(self.act_pixels)
+        m_view.addSeparator()
         m_view.addAction(self.act_log)
         m_view.addAction(self.act_floor)
 
@@ -241,6 +263,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self.act_lifetime)
         tb.addAction(self.act_phasor)
         tb.addSeparator()
+        tb.addAction(self.act_pixels)
         tb.addAction(self.act_log)
 
     def _wire_action_targets(self) -> None:
@@ -332,8 +355,11 @@ class MainWindow(QMainWindow):
         """
         self._stack.setCurrentWidget(self._workspace if loaded else self._welcome)
         for a in (self.act_export, self.act_batch, self.act_save, self.act_load,
-                  self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log, self.act_floor):
+                  self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log,
+                  self.act_floor, self.act_pixels):
             a.setEnabled(loaded)
+        if not loaded:
+            self.pixel_dock.hide()
 
     def set_lifetime_enabled(self, enabled: bool) -> None:
         """Enable the Lifetime panel only in lifetime mode (mirrors the old gating)."""
