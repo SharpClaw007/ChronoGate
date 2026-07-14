@@ -182,6 +182,7 @@ def export_all(
     colorbar_label: str = "photons in gate",
     title: str | None = None,
     selection: Selection | None = None,
+    include_pixel_table: bool = True,
 ) -> dict[str, str]:
     """Write the export artefacts. Returns a map of role -> file path.
 
@@ -191,7 +192,9 @@ def export_all(
 
     When ``selection`` is given, three more files carry the selected pixels out
     (label-map TIFF, pooled-decay CSV, per-pixel metric CSV) and the provenance
-    records what each selection was.
+    records what each selection was. ``include_pixel_table=False`` skips the
+    per-pixel CSV -- a 160k-pixel selection is a ~10 MB table -- and the
+    provenance states the omission instead of staying silent.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -230,20 +233,23 @@ def export_all(
     if selection is not None and selection.labels:
         mask_path = out_dir / f"{base}_selection_mask.tif"
         sdec_path = out_dir / f"{base}_selection_decay.csv"
-        spix_path = out_dir / f"{base}_selection_pixels.csv"
         _write_selection_mask(mask_path, selection, {**metadata, "settings": settings})
         _write_selection_decay_csv(sdec_path, selection)
-        _write_selection_pixels_csv(spix_path, selection)
-        paths |= {"selection_mask": str(mask_path), "selection_decay": str(sdec_path),
-                  "selection_pixels": str(spix_path)}
-        files |= {"selection_mask": mask_path.name, "selection_decay": sdec_path.name,
-                  "selection_pixels": spix_path.name}
+        paths |= {"selection_mask": str(mask_path), "selection_decay": str(sdec_path)}
+        files |= {"selection_mask": mask_path.name, "selection_decay": sdec_path.name}
         sel_block = {
             "labels": selection.labels,
             "pixel_counts": selection.counts(),
             "pixel_columns": selection.pixel_columns,
             "label_map_values": "0 = unselected; k = the k-th label above",
         }
+        if include_pixel_table:
+            spix_path = out_dir / f"{base}_selection_pixels.csv"
+            _write_selection_pixels_csv(spix_path, selection)
+            paths["selection_pixels"] = str(spix_path)
+            files["selection_pixels"] = spix_path.name
+        else:
+            sel_block["pixel_table"] = "omitted (large selection; user choice)"
 
     provenance = {
         "tool": "ChronoGate",

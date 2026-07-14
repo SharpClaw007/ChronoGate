@@ -579,6 +579,45 @@ def test_selection_export() -> None:
     print("OK: selections export as a label map + pooled decays + a per-pixel metric table.")
 
 
+def test_big_pixel_table_warning_and_optout() -> None:
+    """A 160k-pixel lasso is a ~10 MB pixel CSV. It is never capped -- it is the
+    data the user asked for -- but a big one is written knowingly, not by surprise."""
+    w = _window()
+    c = w.controller
+
+    # Opting out of the pixel table still exports the mask and pooled decays,
+    # and the provenance says the table was omitted rather than staying silent.
+    c._on_pixel_rows([(10, 20), (11, 21), (12, 22)])
+    out = Path(tempfile.mkdtemp())
+    paths = c.export(out, include_pixel_table=False)
+    assert "selection_mask" in paths and "selection_decay" in paths
+    assert "selection_pixels" not in paths and not list(out.glob("*_selection_pixels.csv"))
+    prov = json.loads(Path(paths["provenance"]).read_text())
+    assert prov["selection"]["pixel_counts"] == [3]
+    assert "omitted" in prov["selection"]["pixel_table"]
+
+    # The size estimate counts every selected pixel across all shown picks.
+    rows, nbytes = c._selection_size_estimate()
+    assert rows == 3 and nbytes > 0
+
+    # A small selection exports without asking; a huge one asks first, and "no"
+    # flows through to the export as include_pixel_table=False.
+    asked = []
+    seen = {}
+    c._ask_big_table = lambda rows, nbytes: (asked.append(rows), False)[1]
+    c.export = lambda out_dir=None, include_pixel_table=True: (
+        seen.update(ipt=include_pixel_table) or {})
+    c._on_export()
+    assert not asked and seen["ipt"] is True, "small selections must not nag"
+
+    big = np.ones(c.model.intensity.shape, dtype=bool)
+    c._add_pick({"kind": "mask", "mask": big, "label": "everything"})
+    c._on_export()
+    assert asked and asked[0] == int(big.sum())
+    assert seen["ipt"] is False, "declining the big table must reach the export"
+    print("OK: big pixel tables are announced (row count + size) and can be skipped.")
+
+
 def test_settings_roundtrip_restores_selection() -> None:
     """Save/load must not silently lose the selection or the pixel-list setup."""
     from PySide6.QtWidgets import QApplication
@@ -918,6 +957,7 @@ if __name__ == "__main__":
         test_pixel_list()
         test_pixel_list_multi_select()
         test_selection_export()
+        test_big_pixel_table_warning_and_optout()
         test_settings_roundtrip_restores_selection()
         test_pin_glyph_is_in_the_plot_font()
         test_pixel_cursor_and_goto()

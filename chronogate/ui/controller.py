@@ -92,6 +92,10 @@ _PIN_MARK_LIST = "📌 "
 # Beyond this it would bloat the settings file, so it is dropped instead.
 _MAX_SAVED_PIXELS = 50_000
 
+# Above this many selected pixels, the per-pixel CSV is megabytes: ask before
+# writing it (never capped -- it is the data the user asked for -- but knowingly).
+_PIXEL_TABLE_WARN_ROWS = 100_000
+
 
 @contextmanager
 def _blocked(*objs):
@@ -2323,7 +2327,7 @@ class ViewerController(QObject):
         vmin, vmax = self._clim_from(display[np.isfinite(display)], 1, 99)
         return display, vmin, vmax
 
-    def export(self, out_dir=None) -> dict:
+    def export(self, out_dir=None, include_pixel_table: bool = True) -> dict:
         """Write the current view's export artefacts; returns the path map."""
         if self.model is None:
             return {}
@@ -2342,16 +2346,17 @@ class ViewerController(QObject):
                                cmap=self.lifetime_cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
                                settings=self._settings(), colorbar_label="apparent lifetime (ns)",
                                title=f"{self.model.cube.path.name} | RLD τ  (Δt {rl['dt_ns']:.2f} ns)",
-                               selection=selection)
+                               selection=selection, include_pixel_table=include_pixel_table)
         else:
             base = f"{stem}_ch{self.channel}_gate{self.gate_lo_bin}-{self.gate_hi_bin}"
             display, vmin, vmax = self._current_image_for_export()
             paths = export_all(out_dir, base, gated_image=display, time_ns=time_ns, decay=self.model.decay,
                                cmap=self.cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
-                               settings=self._settings(), selection=selection)
+                               settings=self._settings(), selection=selection,
+                               include_pixel_table=include_pixel_table)
         return paths
 
-    def batch_export(self, out_dir=None) -> int:
+    def batch_export(self, out_dir=None, include_pixel_table: bool = True) -> int:
         """Apply the current gate/floor/threshold/mode to *every* plane of the
         stack and export each (TIFF/PNG/CSV/provenance). Returns the plane count."""
         if self.model is None or not self.stack:
@@ -2364,7 +2369,7 @@ class ViewerController(QObject):
                 self.z_index = i
                 self.model = self._load_current()  # cache-aware
                 self._apply_manual_t0()
-                self.export(out_dir)
+                self.export(out_dir, include_pixel_table=include_pixel_table)
                 if self.w is not None:
                     self.w.set_progress(i + 1, n)
                     QApplication.processEvents()   # repaint only; controls are disabled
@@ -2386,10 +2391,42 @@ class ViewerController(QObject):
             self.w, "Choose an output folder for the batch export", self._dialog_dir(),
             QFileDialog.Option.ShowDirsOnly | _DLG_OPT)
         if directory:
-            self.batch_export(directory)
+            # One answer covers every plane (the same selection is applied to each).
+            self.batch_export(directory, include_pixel_table=self._confirm_pixel_table())
+
+    def _selection_size_estimate(self) -> tuple[int, int]:
+        """(rows, approx bytes) of the selection pixel table, without building it.
+
+        One CSV row per selected pixel across every shown pick; ~9 bytes per
+        ``%.6g`` cell (plus its comma) over label + row + col + each metric.
+        """
+        if self.model is None:
+            return 0, 0
+        rows = sum(int(self._pick_pixel_mask(p).sum()) for p in self._shown_picks())
+        cols = len(metrics.metrics()) + 3        # selection label, row, col, metrics
+        return rows, rows * cols * 9
+
+    def _ask_big_table(self, rows: int, nbytes: int) -> bool:
+        """Confirm writing a many-megabyte pixel CSV. Never caps -- only asks."""
+        from PySide6.QtWidgets import QMessageBox
+        resp = QMessageBox.question(
+            self.w, "Large pixel table",
+            f"The selection covers {rows:,} pixels, so the per-pixel metric table "
+            f"will be roughly {max(1, round(nbytes / 1e6))} MB of CSV.\n\n"
+            f"Write the pixel table? (The label map and pooled decays are written "
+            f"either way.)",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        return resp == QMessageBox.Yes
+
+    def _confirm_pixel_table(self) -> bool:
+        rows, nbytes = self._selection_size_estimate()
+        if rows <= _PIXEL_TABLE_WARN_ROWS:
+            return True
+        return self._ask_big_table(rows, nbytes)
 
     def _on_export(self) -> None:
-        paths = self.export()
+        include = self._confirm_pixel_table()
+        paths = self.export(include_pixel_table=include)
         if not paths:
             return
         out_dir = Path(next(iter(paths.values()))).parent
