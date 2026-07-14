@@ -194,6 +194,11 @@ class ViewerController(QObject):
         # always agree on which space they live in.
         self.phasor_cal: dict | None = None
 
+        # The RLD τ map, cached per analysis state; the pick legend, the pixel
+        # list and the selection stats all read this one map (see _tau_map).
+        self._tau_key = None
+        self._tau_val = None
+
         # Cached from the last intensity refresh, so a hover can restate the
         # readout without recomputing the whole gated image.
         self._gated = None
@@ -664,8 +669,7 @@ class ViewerController(QObject):
         n_pinned = len(self.pinned_picks)
         # One τ map serves every pick, so comparing pinned groups states each
         # group's aggregate lifetime without a per-pick RLD pass.
-        tau_map = (metrics.get("tau").compute(self._metric_ctx())
-                   if shown_picks else None)
+        tau_map = self._tau_map() if shown_picks else None
         for i, pick in enumerate(shown_picks):
             pinned = i < n_pinned
             tag = self._pick_tag(pick)
@@ -1818,6 +1822,23 @@ class ViewerController(QObject):
             return a, b
         return (a[0], a[0] + half - 1), (a[0] + half, a[0] + 2 * half - 1)
 
+    def _tau_map(self) -> np.ndarray:
+        """The per-pixel RLD τ map, cached per (model, gates, floor, min counts).
+
+        The model is held weakly (as in :meth:`_phasor_maps`), so plane/binning
+        swaps drop the cache without pinning a photon cube in memory.
+        """
+        floor = self._floor_per_pixel() if self.apply_floor else 0.0
+        state = (self._rld_gates(), floor, self.rld_min_counts)
+        key = self._tau_key
+        if key is None or key[0]() is not self.model or key[1] != state:
+            early, late = state[0]
+            rl = self.model.rapid_lifetime(early, late, floor_per_bin=floor,
+                                           min_counts=self.rld_min_counts)
+            self._tau_key = (weakref.ref(self.model), state)
+            self._tau_val = np.asarray(rl["tau"], dtype=np.float64)
+        return self._tau_val
+
     def _metric_ctx(self) -> metrics.MetricContext:
         """The current analysis settings, packaged for the metric functions."""
         gate_a, gate_b = self._rld_gates()
@@ -1829,6 +1850,7 @@ class ViewerController(QObject):
             floor_per_bin=self._floor_per_pixel() if self.apply_floor else 0.0,
             rld_min_counts=self.rld_min_counts,
             phasor_fn=self._phasor_maps,     # the cached (g, s) maps
+            tau_fn=self._tau_map,            # the cached τ map
         )
 
     def refresh_pixel_list(self) -> None:

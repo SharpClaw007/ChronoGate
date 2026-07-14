@@ -32,7 +32,8 @@ class MetricContext:
 
     ``phasor_fn`` lets the caller inject a *cached* ``() -> (g, s)`` supplier --
     the phasor is a full Fourier pass over the cube, so recomputing it per metric
-    would dominate the cost.
+    would dominate the cost. ``tau_fn`` is the same idea for the RLD τ map, which
+    the pick legend, the pixel list and the selection stats all consume.
     """
 
     model: object                       # gating.GatingModel
@@ -42,6 +43,7 @@ class MetricContext:
     floor_per_bin: float = 0.0
     rld_min_counts: float = 0.0
     phasor_fn: Callable[[], tuple] | None = field(default=None, repr=False)
+    tau_fn: Callable[[], np.ndarray] | None = field(default=None, repr=False)
 
     @property
     def rld_gates(self) -> tuple[tuple[int, int], tuple[int, int]]:
@@ -105,6 +107,8 @@ def _total(ctx: MetricContext) -> np.ndarray:
 @register("tau", "τ (ns)", fmt="{:.2f}", descending=True)
 def _tau(ctx: MetricContext) -> np.ndarray:
     """Apparent lifetime from the two RLD gates (NaN where photon-starved)."""
+    if ctx.tau_fn is not None:          # the caller's cached map
+        return np.asarray(ctx.tau_fn(), dtype=np.float64)
     early, late = ctx.rld_gates
     rl = ctx.model.rapid_lifetime(early, late,
                                   floor_per_bin=ctx.floor_per_bin,

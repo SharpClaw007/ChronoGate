@@ -960,6 +960,45 @@ def test_rld_gates_valid_at_load_and_mode_keyed() -> None:
     print("OK: gate B valid from load; τ gates follow the mode (A/B in lifetime, split elsewhere).")
 
 
+def test_tau_map_shared_cache() -> None:
+    """One τ map serves the pick legend, the pixel list and the selection stats:
+    computed once per (model, gates, floor, min-counts), not once per consumer."""
+    from chronogate import gating as gt, metrics
+    w = _window()
+    c = w.controller
+
+    calls = []
+    orig = c.model.rapid_lifetime
+
+    def counting(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    c.model.rapid_lifetime = counting
+    m1 = c._tau_map()
+    m2 = c._tau_map()
+    assert m1 is m2 and len(calls) == 1, "repeat calls must hit the cache"
+
+    # The τ metric (pixel list, mask_stats, exports) reads the same cache.
+    assert metrics.get("tau").compute(c._metric_ctx()) is m1
+    assert len(calls) == 1, "the metric must not recompute what the cache holds"
+
+    # A gate change is a different key: recomputed once, then cached again.
+    c.nudge_gate(1, 1)
+    m3 = c._tau_map()
+    assert m3 is not m1 and len(calls) >= 2
+    n_after = len(calls)
+    assert c._tau_map() is m3 and len(calls) == n_after
+
+    # Swapping the model (rebinning) drops the cache via the weakref key.
+    c.model.rapid_lifetime = orig
+    w.binning.bin.setValue(2)
+    m4 = c._tau_map()
+    assert m4.shape == c.model.intensity.shape and m4 is not m3
+    w.binning.bin.setValue(1)
+    print("OK: τ map cached once per analysis state and shared by every consumer.")
+
+
 def test_phasor_grid_under_hexbin() -> None:
     """The phasor gridlines must draw UNDER the hexbin cloud, not across it."""
     w = _window()
@@ -1086,6 +1125,7 @@ if __name__ == "__main__":
         test_compare_pinned_groups()
         test_selection_stats_in_stats_panel()
         test_rld_gates_valid_at_load_and_mode_keyed()
+        test_tau_map_shared_cache()
         test_phasor_grid_under_hexbin()
         test_phasor_calibration_ui()
         test_floor_slider_summed_range_and_scale()
