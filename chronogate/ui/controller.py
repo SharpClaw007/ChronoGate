@@ -654,6 +654,10 @@ class ViewerController(QObject):
         list_items = []
         shown_picks = self._shown_picks()
         n_pinned = len(self.pinned_picks)
+        # One τ map serves every pick, so comparing pinned groups states each
+        # group's aggregate lifetime without a per-pick RLD pass.
+        tau_map = (metrics.get("tau").compute(self._metric_ctx())
+                   if shown_picks else None)
         for i, pick in enumerate(shown_picks):
             pinned = i < n_pinned
             tag = self._pick_tag(pick)
@@ -667,7 +671,13 @@ class ViewerController(QObject):
             fit = (gating.fit_mono_exponential(x, raw, self.model.t0_ns(), floor_pp)
                    if self.fit_curve else None)
             tau_note = f"  τ≈{fit[1]:.2f} ns" if fit else ""
-            body = f": {in_gate:.1f}/px in gate{tau_note}"
+            med_note = ""
+            if tau_map is not None:
+                vals = tau_map[self._pick_pixel_mask(pick)]
+                finite = vals[np.isfinite(vals)]
+                if finite.size:
+                    med_note = f" · med τ {float(np.median(finite)):.2f} ns"
+            body = f": {in_gate:.1f}/px in gate{tau_note}{med_note}"
             # The Qt list renders any emoji; the *plot* font (DejaVu Sans) has no
             # pushpin, so a 📌 in the legend is a tofu box and a warning per redraw.
             legend_tag = (_PIN_MARK_PLOT + tag) if pinned else tag
@@ -684,7 +694,7 @@ class ViewerController(QObject):
                                         label="_nolegend_")
                 self._pick_lines.append(fl)
                 self._picks_ymax = max(self._picks_ymax, float(np.nanmax(yfit)))
-            list_items.append((f"{list_tag} — {in_gate:.1f}/px in gate{tau_note}", color))
+            list_items.append((f"{list_tag} — {in_gate:.1f}/px in gate{tau_note}{med_note}", color))
         if self.w is not None:
             self.w.picks.set_items(list_items)
 

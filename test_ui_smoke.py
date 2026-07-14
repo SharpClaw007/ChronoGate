@@ -752,6 +752,51 @@ def test_phasor_lasso_selection() -> None:
     print(f"OK: phasor lasso selects {finite:,} px, highlights them, pools their decay.")
 
 
+def test_compare_pinned_groups() -> None:
+    """Pin a *group*, select another, and compare: two pooled decays overlaid and
+    each pick's aggregate stats (median RLD τ) stated side by side in the list."""
+    from chronogate import metrics
+    w = _window()
+    c = w.controller
+    c._clear_picks()
+
+    # Two disjoint groups around the brightest pixel (so τ has photons to work
+    # with), and a gate hugging the decay so its split halves both hold signal.
+    w.binning.bin.setValue(4)               # pool photons -> τ resolves
+    t0 = c.model.t0_bin
+    c._set_gate("A", t0, t0 + 40)
+    c._refresh_decay()
+    c._refresh_image()
+    r, col = np.unravel_index(int(c.model.intensity.argmax()), c.model.intensity.shape)
+    r, col = int(r), int(col)
+    g1 = [(r, col), (r, col + 1), (r + 1, col)]
+    g2 = [(r + 4, col + 4), (r + 5, col + 5)]
+
+    c._on_pixel_rows(g1)
+    assert c.picks[0]["kind"] == "mask"
+    c._on_pin()                              # freeze group 1
+    c._on_pixel_rows(g2)                     # group 2 live
+    assert len(c.pinned_picks) == 1 and c.pinned_picks[0]["kind"] == "mask"
+    assert len(c._shown_picks()) == 2 and len(c._pick_lines) == 2, \
+        "two pooled decays are overlaid for comparison"
+
+    # Each list row states that pick's aggregate lifetime next to its counts.
+    items = [w.picks.list.item(i).text() for i in range(w.picks.list.count())]
+    assert len(items) == 2 and "3 px" in items[0] and "2 px" in items[1]
+    tau_map = metrics.get("tau").compute(c._metric_ctx())
+    for text, pick in zip(items, c._shown_picks()):
+        vals = tau_map[c._pick_pixel_mask(pick)]
+        finite = vals[np.isfinite(vals)]
+        if finite.size:
+            assert f"med τ {float(np.median(finite)):.2f} ns" in text, text
+        else:
+            assert "med τ" not in text, text
+    assert any("med τ" in t for t in items), "at least one group must resolve a τ"
+
+    c._clear_picks()
+    print("OK: pinned groups compare side by side (pooled decays + per-group median τ).")
+
+
 def test_selection_stats_in_stats_panel() -> None:
     """Selecting a population must state its aggregate (mean/median τ, photons,
     spread) in the Stats panel -- not leave the user to export a CSV to learn it."""
@@ -883,6 +928,7 @@ if __name__ == "__main__":
         test_cache_lockscale_and_t0()
         test_probe_and_batch_export()
         test_threaded_decode()
+        test_compare_pinned_groups()
         test_selection_stats_in_stats_panel()
         test_rld_gates_valid_at_load_and_mode_keyed()
         test_floor_slider_summed_range_and_scale()
