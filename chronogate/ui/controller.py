@@ -77,6 +77,10 @@ _PICK_COLORS = [
 INTENSITY_CMAPS = ["viridis", "gray", "magma", "inferno", "cividis"]
 LIFETIME_CMAPS = ["turbo", "viridis", "plasma", "inferno", "cividis"]
 
+# Above this many pixels, a mask selection is shown only as a tint: one ring per
+# pixel would be denser than the pixels themselves and read as a solid blob.
+_MASK_MARKER_LIMIT = 500
+
 
 @contextmanager
 def _blocked(*objs):
@@ -162,9 +166,10 @@ class ViewerController(QObject):
         self._hover_bg = None         # the cached background bitmap
         self._hover_fill = None       # per-frame gate shading under the hover curve
 
-        # Phasor lasso: select pixels by *property* (their place in the phasor
-        # cloud) rather than by location, then see them highlighted on the image.
-        self.phasor_mask = None           # bool (Y, X) or None
+        # A selection of many pixels, spotlighted on the image and pooled into one
+        # decay. Two ways in: a lasso round a phasor cluster (selection by lifetime
+        # *signature*), or multi-selecting rows in the pixel list (by *rank*).
+        self.select_mask = None           # bool (Y, X) or None
         self._lasso = None
         self._lasso_verts = None
         self._phasor_key = None           # cache key for the (g, s) maps
@@ -410,7 +415,7 @@ class ViewerController(QObject):
         w.pixels.fmin.editingFinished.connect(self.refresh_pixel_list)
         w.pixels.fmax.editingFinished.connect(self.refresh_pixel_list)
         w.pixels.refreshRequested.connect(self.refresh_pixel_list)
-        w.pixels.pixelChosen.connect(self._on_pixel_row)
+        w.pixels.pixelsChosen.connect(self._on_pixel_rows)
         w.pixel_dock.visibilityChanged.connect(self._on_pixel_dock)
         w.binning.bin.valueChanged.connect(self._on_bin_size)
         w.binning.target.valueChanged.connect(self._on_bin_target)
@@ -581,9 +586,10 @@ class ViewerController(QObject):
         return r0, r1, c0, c1, tag
 
     def _pick_tag(self, pick: dict) -> str:
-        """Short label for a pick of any kind (pixel, roi, phasor mask)."""
+        """Short label for a pick of any kind (pixel, roi, or a mask of many pixels)."""
         if pick["kind"] == "mask":
-            return f"phasor sel ({int(np.count_nonzero(pick['mask'])):,} px)"
+            n = int(np.count_nonzero(pick["mask"]))
+            return pick.get("label") or f"selection ({n:,} px)"
         return self._pick_region(pick)[4]
 
     def _pick_decay(self, pick: dict) -> np.ndarray:
@@ -684,7 +690,17 @@ class ViewerController(QObject):
         ax = self.ic.ax
         for i, pick in enumerate(self._shown_picks()):
             if pick["kind"] == "mask":
-                continue          # shown as the translucent overlay instead
+                # The veil alone is enough for a big lasso, but a handful of
+                # scattered pixels are single-pixel dots -- invisible without a ring
+                # around each. Above the cap the rings would be denser than the
+                # pixels, so the tint carries it on its own.
+                m = pick["mask"]
+                if int(m.sum()) <= _MASK_MARKER_LIMIT:
+                    rr, cc = np.nonzero(m)
+                    (art,) = ax.plot(cc, rr, linestyle="none", marker="o", ms=6,
+                                     mew=1.2, mfc="none", mec=theme.SELECT, zorder=7)
+                    self._pick_markers.append(art)
+                continue
             color = _PICK_COLORS[i % len(_PICK_COLORS)]
             r0, r1, c0, c1, _ = self._pick_region(pick)
             rect = Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0, facecolor="none",
@@ -705,7 +721,7 @@ class ViewerController(QObject):
         the selection unmistakable, whatever colormap is in use.
         """
         ny, nx = shape[:2]
-        m = self.phasor_mask
+        m = self.select_mask
         if m is None or m.shape != (ny, nx) or self.mode == "phasor":
             self.mask_im.set_visible(False)
             return
@@ -919,7 +935,7 @@ class ViewerController(QObject):
         if n == 0:
             self.statusMessage.emit("Lasso caught no pixels — draw around a denser part of the cloud.")
             return
-        self.phasor_mask = mask
+        self.select_mask = mask
         self._lasso_verts = np.asarray(verts)
         self._add_pick({"kind": "mask", "mask": mask, "label": f"phasor sel ({n:,} px)"})
         self.statusMessage.emit(
@@ -943,11 +959,11 @@ class ViewerController(QObject):
         (ln,) = ax.plot(gc, sc, color=theme.MUTED, lw=1.3, zorder=6)
         self._phasor_artists.append(ln)
         sel = ""
-        if self.phasor_mask is not None and self._lasso_verts is not None:
+        if self.select_mask is not None and self._lasso_verts is not None:
             v = np.vstack([self._lasso_verts, self._lasso_verts[:1]])   # close the loop
             (poly,) = ax.plot(v[:, 0], v[:, 1], color=theme.SELECT, lw=1.6, zorder=7)
             self._phasor_artists.append(poly)
-            sel = f"  ·  {int(self.phasor_mask.sum()):,} px selected"
+            sel = f"  ·  {int(self.select_mask.sum()):,} px selected"
         ax.set_xlim(-0.05, 1.05)
         ax.set_ylim(-0.02, 0.62)
         ax.set_aspect("equal")
@@ -961,8 +977,8 @@ class ViewerController(QObject):
                 "Mode": "phasor (g, s)",
                 "Points": f"{g.size:,} / {self.model.n_pixels:,} px",
                 "Median": f"g {gm:.3f} · s {sm:.3f}" if g.size else "—",
-                "Selected": (f"{int(self.phasor_mask.sum()):,} px (lasso)"
-                             if self.phasor_mask is not None else "— (drag a lasso)"),
+                "Selected": (f"{int(self.select_mask.sum()):,} px (lasso)"
+                             if self.select_mask is not None else "— (drag a lasso)"),
             })
 
     def _refresh_intensity_image(self) -> None:
@@ -1550,7 +1566,7 @@ class ViewerController(QObject):
         # A new pick *replaces* the live one (single decay at a time). Pinned
         # picks (via Pin) stay overlaid for comparison.
         if pick["kind"] != "mask":
-            self.phasor_mask = None      # a hand-picked region supersedes the lasso
+            self.select_mask = None      # a hand-picked region supersedes the lasso
             self._lasso_verts = None
         self.picks = [pick]
         self._end_hover(redraw=False)    # the click locks in what was being previewed
@@ -1564,9 +1580,9 @@ class ViewerController(QObject):
             self._refresh_image()        # readout, markers and any lasso overlay
         finally:
             self._skip_pixel_list = False
-        if self.w is not None and pick["kind"] == "pixel":
-            self.w.pixels.select_pixel(pick["r"], pick["c"])
-        self.statusMessage.emit(f"Showing decay for {pick['label']}.")
+        if self.w is not None and not self.w.pixel_dock.isHidden():
+            self._reflect_pick_in_list()
+        self.statusMessage.emit(f"Showing decay for {self._pick_tag(pick)}.")
 
     def _shown_picks(self) -> list:
         """Pinned picks plus the locked one, in draw order.
@@ -1593,8 +1609,8 @@ class ViewerController(QObject):
         self.pinned_picks = [p for p in self.pinned_picks if ok(p)]
         self._end_hover(redraw=False)
         self._pixel_key = None      # the metrics are on a new scale: reseed the filter
-        if self.phasor_mask is not None and self.phasor_mask.shape != (ny, nx):
-            self.phasor_mask = None
+        if self.select_mask is not None and self.select_mask.shape != (ny, nx):
+            self.select_mask = None
             self._lasso_verts = None
 
     # ------------------------------------------------- keyboard / typed picking
@@ -1662,8 +1678,22 @@ class ViewerController(QObject):
                              vmin=p.fmin.value(), vmax=p.fmax.value(),
                              limit=p.limit.value(), descending=p.desc.isChecked())
         p.set_table(table, {m.key: m for m in metrics.metrics()})
-        if len(self.picks) == 1 and self.picks[0]["kind"] == "pixel":
-            p.select_pixel(self.picks[0]["r"], self.picks[0]["c"])
+        self._reflect_pick_in_list()
+
+    def _reflect_pick_in_list(self) -> None:
+        """Show the current pick as the table's selection (a rebuild would lose it)."""
+        p = self.w.pixels
+        pick = self.picks[0] if len(self.picks) == 1 else None
+        if pick is None:
+            p.select_matching(lambda r, c: False)
+        elif pick["kind"] == "pixel":
+            p.select_pixel(pick["r"], pick["c"])
+        elif pick["kind"] == "mask":
+            m = pick["mask"]
+            p.select_matching(lambda r, c: bool(m[r, c]))
+        else:                                       # an ROI: every pixel inside it
+            r0, r1, c0, c1, _ = self._pick_region(pick)
+            p.select_matching(lambda r, c: r0 <= r < r1 and c0 <= c < c1)
 
     def _seed_pixel_filter(self, key: str) -> None:
         """Reset the range filter to a metric's full span, so switching metric (or
@@ -1685,9 +1715,27 @@ class ViewerController(QObject):
         if visible:
             self.refresh_pixel_list()
 
-    def _on_pixel_row(self, r: int, c: int) -> None:
-        """A row was chosen (clicked, or walked to with the arrow keys)."""
-        self._add_pixel(int(r), int(c))
+    def _on_pixel_rows(self, picked: list) -> None:
+        """Rows were chosen in the pixel list.
+
+        One row selects that pixel. Several (Ctrl/⌘-click, Shift-range, Ctrl+A)
+        become one **group**: their pooled decay on the left, all of them
+        spotlighted on the image, their combined photons-in-gate in the readout.
+        Two hundred individual curves would be unreadable; a pooled one is the
+        thing you actually want to look at. (Pin still compares a few one by one.)
+        """
+        if self.model is None or not picked:
+            return
+        if len(picked) == 1:
+            self._add_pixel(*picked[0])
+            return
+        mask = np.zeros(self.model.intensity.shape, dtype=bool)
+        rows, cols = zip(*picked)
+        mask[np.asarray(rows), np.asarray(cols)] = True
+        n = int(mask.sum())
+        self.select_mask = mask
+        self._lasso_verts = None          # this selection is not a phasor polygon
+        self._add_pick({"kind": "mask", "mask": mask, "label": f"list sel ({n:,} px)"})
 
     def _on_pin(self) -> None:
         """Freeze the live decay so the next click can be compared against it."""
@@ -1705,7 +1753,7 @@ class ViewerController(QObject):
         self.picks = []
         self.pinned_picks = []
         self._end_hover(redraw=False)
-        self.phasor_mask = None
+        self.select_mask = None
         self._lasso_verts = None
         self._refresh_decay()
         self._refresh_image()   # readout reverts to the whole-image total
@@ -1976,7 +2024,7 @@ class ViewerController(QObject):
         self.pinned_picks = []
         self._end_hover(redraw=False)
         self._pixel_key = None
-        self.phasor_mask = None
+        self.select_mask = None
         self._lasso_verts = None
         self.threshold = 0
         self.noise_floor_pp = self.model.auto_noise_floor_pp()

@@ -52,6 +52,11 @@ clicking simply cannot land on a chosen pixel. Five ways to get at one properly:
   ranking with ↑/↓) to select that pixel. This is the answer to "show me the
   brightest / longest-lived pixels", which no amount of clicking gets you.
   Columns come from a metrics registry — see below.
+  **Multi-select works like Finder/Explorer:** Ctrl/⌘-click adds a row, Shift-click
+  takes a range, `Ctrl+A` takes the lot. Several rows become one **group** — their
+  pooled decay on the left, each pixel ringed on the image, and their *combined*
+  photons-in-gate in the readout. (Two hundred individual curves would be
+  unreadable; to compare a few pixels one by one, use **Pin**.)
 - **Arrow-key pixel cursor:** with a pixel selected, the arrow keys step it one
   pixel at a time (**Shift** = 10), with a crosshair marking it on the image.
 - **Go to (row, col):** type an exact pixel — precise and reproducible in a caption.

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt, Signal, QSignalBlocker
+from PySide6.QtCore import (
+    QItemSelection, QItemSelectionModel, Qt, QTimer, Signal, QSignalBlocker,
+)
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
@@ -399,13 +401,19 @@ class PixelListPanel(QWidget):
     there appears here with no change to this file.
     """
 
-    pixelChosen = Signal(int, int)      # (row, col) of the pixel to select
+    pixelsChosen = Signal(list)         # [(row, col), ...] -- may be many
     refreshRequested = Signal()
 
     def __init__(self, metrics: list):
         super().__init__()
         self._metrics = metrics
         self._rows: list[tuple[int, int]] = []
+        # A rubber-band drag over the table emits a selection change per row it
+        # crosses; coalesce them so one drag costs one refresh, not two hundred.
+        self._sel_timer = QTimer(self)
+        self._sel_timer.setSingleShot(True)
+        self._sel_timer.setInterval(60)
+        self._sel_timer.timeout.connect(self._emit_selection)
 
         self.metric = QComboBox()
         for m in metrics:
@@ -433,12 +441,18 @@ class PixelListPanel(QWidget):
 
         self.table = QTableWidget(0, 0)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        # Finder/Explorer-style multi-select: Ctrl (Cmd on macOS) toggles a row,
+        # Shift extends a range, Ctrl+A takes the lot. Qt maps the platform's
+        # modifiers for us. Several rows = one pooled group of pixels.
+        self.table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
-        self.table.setToolTip("Click a row (or walk it with ↑/↓) to select that pixel.")
-        self.table.itemSelectionChanged.connect(self._emit_selection)
+        self.table.setToolTip(
+            "Click a row (or walk it with ↑/↓) to select that pixel.\n"
+            "Ctrl/⌘-click to add one, Shift-click for a range, Ctrl+A for all — "
+            "several rows are pooled into one group (combined decay, all highlighted).")
+        self.table.itemSelectionChanged.connect(self._sel_timer.start)
 
         self.summary = _muted("")
 
@@ -514,26 +528,47 @@ class PixelListPanel(QWidget):
             note += f"  (truncated to the top {shown:,})"
         self.summary.setText(note)
 
+    def select_matching(self, is_selected) -> int:
+        """Highlight every listed row whose pixel satisfies ``is_selected(r, c)``.
+
+        Used to *reflect* the current pick back into the table (after a rebuild, or
+        when the pixel was chosen on the image), so it must not emit -- otherwise
+        showing a selection would immediately re-apply it.
+        """
+        self._sel_timer.stop()
+        sm = self.table.selectionModel()
+        if sm is None:
+            return 0
+        model, last = self.table.model(), self.table.columnCount() - 1
+        chosen = QItemSelection()
+        first, n = None, 0
+        for i, (r, c) in enumerate(self._rows):
+            if is_selected(r, c):
+                chosen.select(model.index(i, 0), model.index(i, max(0, last)))
+                n += 1
+                if first is None:
+                    first = i
+        with QSignalBlocker(self.table), QSignalBlocker(sm):
+            sm.select(chosen, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        if first is not None:
+            self.table.scrollToItem(self.table.item(first, 0))
+        return n
+
     def select_pixel(self, r: int, c: int) -> bool:
-        """Highlight the row for pixel (r, c) if it is in the list. No signal."""
-        try:
-            i = self._rows.index((int(r), int(c)))
-        except ValueError:
-            with QSignalBlocker(self.table):
-                self.table.clearSelection()
-            return False
-        with QSignalBlocker(self.table):
-            self.table.selectRow(i)
-            self.table.scrollToItem(self.table.item(i, 0))
-        return True
+        """Highlight the row for pixel (r, c) if it is listed. No signal."""
+        return self.select_matching(lambda rr, cc: (rr, cc) == (int(r), int(c))) > 0
+
+    def selected_pixels(self) -> list[tuple[int, int]]:
+        model = self.table.selectionModel()
+        if model is None:
+            return []
+        return [self._rows[i.row()] for i in sorted(model.selectedRows(), key=lambda x: x.row())
+                if 0 <= i.row() < len(self._rows)]
 
     def _emit_selection(self) -> None:
-        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
-        if not rows:
-            return
-        i = rows[0].row()
-        if 0 <= i < len(self._rows):
-            self.pixelChosen.emit(*self._rows[i])
+        picked = self.selected_pixels()
+        if picked:
+            self.pixelsChosen.emit(picked)
 
 
 class BinningPanel(QGroupBox):

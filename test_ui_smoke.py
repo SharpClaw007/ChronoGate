@@ -389,6 +389,15 @@ def test_hover_probe_blits() -> None:
     print("OK: hover blits the pixel's decay live; axis frozen; click locks it in.")
 
 
+def _flush_selection(panel) -> None:
+    """Let the pixel list's debounced selection reach the controller."""
+    import time
+    from PySide6.QtWidgets import QApplication
+    deadline = time.monotonic() + 2.0
+    while panel._sel_timer.isActive() and time.monotonic() < deadline:
+        QApplication.instance().processEvents()
+
+
 def test_pixel_list() -> None:
     """The ranked, filterable pixel table."""
     from PySide6.QtWidgets import QApplication
@@ -422,7 +431,9 @@ def test_pixel_list() -> None:
     assert "truncated" in p.summary.text(), "a top-N cut is stated, not hidden"
 
     # Choosing a row selects that pixel: decay, crosshair and readout all follow.
+    # (Selection is debounced, so a rubber-band drag costs one refresh, not 200.)
     p.table.selectRow(3)
+    _flush_selection(p)
     r3, c3 = int(p.table.item(3, 0).text()), int(p.table.item(3, 1).text())
     assert c.picks and (c.picks[0]["r"], c.picks[0]["c"]) == (r3, c3)
     assert f"px({r3},{c3})" in c.ic.ax.get_title()
@@ -447,6 +458,60 @@ def test_pixel_list() -> None:
 
     w.pixel_dock.hide()
     print("OK: pixel list ranks/filters/truncates; a row selects that pixel.")
+
+
+def test_pixel_list_multi_select() -> None:
+    """Ctrl/Shift-style multi-select pools the chosen rows into one group."""
+    from PySide6.QtCore import QItemSelection, QItemSelectionModel
+    from PySide6.QtWidgets import QApplication, QTableWidget
+    w = _window()
+    c = w.controller
+    p = w.pixels
+    w.show()
+    QApplication.instance().processEvents()
+    w.act_pixels.trigger()
+    QApplication.instance().processEvents()
+    assert p.table.selectionMode() == QTableWidget.ExtendedSelection, \
+        "Ctrl/⌘-click and Shift-range need ExtendedSelection"
+
+    # Select rows 0..4 as a range (what a Shift-click does).
+    sm = p.table.selectionModel()
+    model, last = p.table.model(), p.table.columnCount() - 1
+    span = QItemSelection(model.index(0, 0), model.index(4, last))
+    sm.select(span, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+    _flush_selection(p)
+
+    want = [(int(p.table.item(i, 0).text()), int(p.table.item(i, 1).text())) for i in range(5)]
+    assert p.selected_pixels() == want
+    assert len(c.picks) == 1 and c.picks[0]["kind"] == "mask", "many rows -> one pooled group"
+    mask = c.picks[0]["mask"]
+    assert int(mask.sum()) == 5 and all(mask[r, cc] for r, cc in want)
+    assert c.select_mask is mask, "the group is spotlighted on the image"
+    assert c.mask_im.get_visible()
+    # A handful of single-pixel dots under the veil would be invisible: ring them.
+    assert len(c._pick_markers) == 1
+    rings = c._pick_markers[0]
+    assert sorted(zip(rings.get_ydata(), rings.get_xdata())) == sorted(want), \
+        "every pixel in a small group is ringed on the image"
+
+    # Its decay is the pooled mean of those five pixels, and the readout is their sum.
+    assert len(c._pick_lines) == 1
+    assert np.allclose(c._pick_decay(c.picks[0]), c.model.mask_decay(mask))
+    total = int(c._gated[mask].sum())
+    assert "list sel (5 px)" in c.ic.ax.get_title() and f"{total:,}" in c.ic.ax.get_title()
+
+    # A gate change rebuilds the table but must not lose the group's selection.
+    c.nudge_gate(1, 0)
+    assert len(p.selected_pixels()) == 5, "the group stays selected across a rebuild"
+    assert len(c.picks) == 1 and c.picks[0]["kind"] == "mask"
+
+    # Dropping back to one row returns to a single-pixel pick.
+    p.table.selectRow(2)
+    _flush_selection(p)
+    assert c.picks[0]["kind"] == "pixel" and c.select_mask is None
+    assert not c.mask_im.get_visible(), "one pixel is not a group -- no spotlight"
+    w.pixel_dock.hide()
+    print("OK: multi-select pools rows into one group (decay, spotlight, combined total).")
 
 
 def test_pixel_cursor_and_goto() -> None:
@@ -517,15 +582,15 @@ def test_phasor_lasso_selection() -> None:
     # A lasso around the whole phasor plane selects every pixel that has photons.
     c._on_phasor_lasso([(-1.0, -1.0), (2.0, -1.0), (2.0, 2.0), (-1.0, 2.0)])
     finite = int((np.isfinite(g) & np.isfinite(s)).sum())
-    assert c.phasor_mask is not None and int(c.phasor_mask.sum()) == finite
+    assert c.select_mask is not None and int(c.select_mask.sum()) == finite
     assert len(c.picks) == 1 and c.picks[0]["kind"] == "mask"
     assert len(c._pick_lines) == 1, "the selected population's pooled decay is drawn"
     assert c._pick_decay(c.picks[0]).size == c.model.n_bins
 
     # An empty lasso is refused rather than clearing the selection.
-    before = c.phasor_mask
+    before = c.select_mask
     c._on_phasor_lasso([(-1.0, -1.0), (-0.9, -1.0), (-0.9, -0.9)])
-    assert c.phasor_mask is before, "an empty lasso must not wipe the current selection"
+    assert c.select_mask is before, "an empty lasso must not wipe the current selection"
 
     # Back on the image, the selection is highlighted and reports its own counts.
     c._enter_mode("intensity")
@@ -533,14 +598,14 @@ def test_phasor_lasso_selection() -> None:
     assert c.mask_im.get_array().shape[:2] == c.model.intensity.shape
     floor = c._floor_per_pixel() if c.apply_floor else 0.0
     gated = c.model.gate(c.gate_lo_bin, c.gate_hi_bin, floor_per_bin=floor)
-    total = int(gated[c.phasor_mask].sum())
+    total = int(gated[c.select_mask].sum())
     assert "phasor sel" in c.ic.ax.get_title() and f"{total:,}" in c.ic.ax.get_title()
 
     # Clicking a pixel supersedes the lasso; Clear wipes everything.
     c._add_pixel(40, 40)
-    assert c.phasor_mask is None and not c.mask_im.get_visible()
+    assert c.select_mask is None and not c.mask_im.get_visible()
     c._clear_picks()
-    assert c.phasor_mask is None and not c._shown_picks()
+    assert c.select_mask is None and not c._shown_picks()
     print(f"OK: phasor lasso selects {finite:,} px, highlights them, pools their decay.")
 
 
@@ -590,6 +655,7 @@ if __name__ == "__main__":
         test_picks_and_keyboard_helpers()
         test_hover_probe_blits()
         test_pixel_list()
+        test_pixel_list_multi_select()
         test_pixel_cursor_and_goto()
         test_pick_markers_on_image()
         test_phasor_lasso_selection()
