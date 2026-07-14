@@ -2356,25 +2356,57 @@ class ViewerController(QObject):
                                include_pixel_table=include_pixel_table)
         return paths
 
+    def _picks_for_current_model(self, recipes: list[tuple[dict, dict]]) -> list[dict]:
+        """Rebuild picks from their recipes against the *current* model.
+
+        A lasso polygon is re-cut against this plane's phasor; located picks
+        (pixel/ROI/coordinate list) are revalidated against its shape. A mask too
+        big to have a recipe is carried as-is when the shape still fits.
+        """
+        out = []
+        for recipe, original in recipes:
+            if recipe.get("kind") == "unsaved":
+                pick = (original if original["mask"].shape == self.model.intensity.shape
+                        else None)
+            else:
+                pick = self._pick_from_recipe(recipe)
+            if pick is not None:
+                out.append(pick)
+        return out
+
     def batch_export(self, out_dir=None, include_pixel_table: bool = True) -> int:
         """Apply the current gate/floor/threshold/mode to *every* plane of the
-        stack and export each (TIFF/PNG/CSV/provenance). Returns the plane count."""
+        stack and export each (TIFF/PNG/CSV/provenance). Returns the plane count.
+
+        Selections travel with the batch as *recipes*: a phasor lasso is re-cut
+        against each plane's own phasor (a lifetime signature means something on
+        every plane; the drawing plane's pixel mask does not), while pixels, ROIs
+        and coordinate groups carry across unchanged.
+        """
         if self.model is None or not self.stack:
             return 0
         out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports" / "batch"
         n, saved_z, saved_model = len(self.stack), self.z_index, self.model
+        saved_picks, saved_pins = self.picks, self.pinned_picks
+        pin_recipes = [(self._pick_recipe(p), p) for p in saved_pins]
+        live_recipes = [(self._pick_recipe(p), p) for p in saved_picks]
+        has_picks = bool(pin_recipes or live_recipes)
         self._set_busy(True, f"batch export ({n} planes)")
         try:
             for i in range(n):
                 self.z_index = i
                 self.model = self._load_current()  # cache-aware
                 self._apply_manual_t0()
+                if has_picks:
+                    self.pinned_picks = self._picks_for_current_model(pin_recipes)
+                    self.picks = self._picks_for_current_model(live_recipes)[:1]
                 self.export(out_dir, include_pixel_table=include_pixel_table)
                 if self.w is not None:
                     self.w.set_progress(i + 1, n)
                     QApplication.processEvents()   # repaint only; controls are disabled
         finally:
             self.z_index, self.model = saved_z, saved_model
+            self.picks, self.pinned_picks = saved_picks, saved_pins
             self._set_busy(False)
         if self.w is not None:
             self._update_header(); self._refresh_decay(); self._refresh_image()

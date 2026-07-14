@@ -298,6 +298,57 @@ def test_probe_and_batch_export() -> None:
     print(f"OK: probe classifies files; batch exported {n} planes; provenance versioned.")
 
 
+def test_batch_export_recuts_selection_per_plane() -> None:
+    """A phasor lasso is a polygon in (g, s) space: a batch export must re-cut it
+    against EACH plane's phasor, not stamp the drawing plane's pixel mask onto
+    every z. Located picks (a pinned pixel) simply carry across."""
+    import tifffile
+    _window()  # ensure app
+    from chronogate.ui.main_window import MainWindow
+    w = MainWindow(None, open_dir=str(DATA_DIR))
+    c = w.controller
+    c.load_folder(str(DATA_DIR))
+    c.stack = c.stack[:2]
+    c.z_index = 0
+    c._reload_model_busy()
+    c._refit_ranges()
+    c._refresh_image()
+
+    # Pin a pixel, then lasso a phasor cluster on plane 0.
+    c._add_pixel(100, 100)
+    c._on_pin()
+    c._enter_mode("phasor")
+    verts = [(0.2, 0.02), (0.9, 0.02), (0.9, 0.5), (0.2, 0.5)]
+    c._on_phasor_lasso(verts)
+    assert c.picks and c.picks[0]["kind"] == "mask"
+    mask_plane0 = c.picks[0]["mask"].copy()
+    c._enter_mode("intensity")
+
+    out = Path(tempfile.mkdtemp())
+    n = c.batch_export(out)
+    assert n == 2
+
+    # After the batch, the live state is exactly what the user had.
+    assert np.array_equal(c.picks[0]["mask"], mask_plane0)
+    assert len(c.pinned_picks) == 1 and c.pinned_picks[0]["r"] == 100
+
+    # Each plane's label map holds the lasso re-cut against THAT plane's phasor.
+    for i in range(2):
+        c.z_index = i
+        c._reload_model_busy()
+        expect = c._lasso_mask(np.asarray(verts))
+        stem = c.stack[i].stem
+        tif = next(Path(out).rglob(f"{stem}*_selection_mask.tif"))
+        lab = tifffile.imread(tif)
+        assert np.array_equal(lab == 2, expect), f"plane {i}: lasso not re-cut"
+        assert lab[100, 100] == 1, f"plane {i}: the pinned pixel must carry across"
+    assert not np.array_equal(mask_plane0, c._lasso_mask(np.asarray(verts))), \
+        "planes differ, so the re-cut masks should differ (else this test proves nothing)"
+    c.z_index = 0
+    c._reload_model_busy()
+    print("OK: batch export re-cuts the lasso per plane and carries located picks.")
+
+
 def test_threaded_decode() -> None:
     import time
     from PySide6.QtWidgets import QApplication
@@ -967,6 +1018,7 @@ if __name__ == "__main__":
         test_wave_c_views()
         test_cache_lockscale_and_t0()
         test_probe_and_batch_export()
+        test_batch_export_recuts_selection_per_plane()
         test_threaded_decode()
         test_compare_pinned_groups()
         test_selection_stats_in_stats_panel()
