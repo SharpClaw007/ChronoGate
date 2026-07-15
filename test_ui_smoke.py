@@ -1301,6 +1301,8 @@ def test_export_dialog_defaults_and_mapping() -> None:
     assert not dlg.chk_report.isChecked()
     dlg.chk_report.setChecked(True)
     assert dlg.options().report is True
+    # Restrict-to-selection needs a selection to restrict to.
+    assert not dlg.chk_restrict.isEnabled() and not dlg.chk_restrict.isChecked()
 
     # With a small selection both selection boxes are on; unchecking the parent
     # pulls the pixel table with it. Batch is offered for a stack and can be
@@ -1309,6 +1311,9 @@ def test_export_dialog_defaults_and_mapping() -> None:
                       sel_rows=3, sel_bytes=120, n_planes=4, default_dir="/o",
                       batch=True)
     assert d2.chk_sel.isChecked() and d2.chk_pixels.isChecked()
+    assert d2.chk_restrict.isEnabled() and not d2.chk_restrict.isChecked()
+    d2.chk_restrict.setChecked(True)
+    assert d2.options().restrict_to_selection is True
     assert d2.chk_batch.isEnabled() and d2.chk_batch.isChecked() and d2.batch()
     d2.chk_sel.setChecked(False)
     assert not d2.chk_pixels.isEnabled()
@@ -1500,6 +1505,61 @@ def test_one_page_report_ui() -> None:
     print("OK: one-page report from all three modes; hash + headline verified.")
 
 
+def test_restrict_export_to_selection() -> None:
+    """Restrict-to-selection masks everything outside the selected pixels:
+    the raster keeps its full-frame geometry (coordinates stay valid) but is
+    NaN elsewhere, the decay CSV becomes the selection's pooled counts, the
+    report's headline/panels cover only the selection, and the provenance
+    states the restriction. Without a selection the flag is a no-op."""
+    import csv as csvmod
+    import tifffile
+    from chronogate.export import ExportOptions
+
+    w = _window()
+    c = w.controller
+    px = [(10, 20), (11, 21), (12, 22)]
+    c._on_pixel_rows(px)
+    out = Path(tempfile.mkdtemp())
+    paths = c.export(out, options=ExportOptions(restrict_to_selection=True))
+
+    # Raster: finite exactly on the selection, NaN everywhere else.
+    img = tifffile.imread(paths["raw_tiff"])
+    assert img.shape == c.model.intensity.shape, "full-frame geometry kept"
+    finite = np.argwhere(np.isfinite(img))
+    assert sorted(map(tuple, finite)) == sorted(px)
+    prov = json.loads(Path(paths["provenance"]).read_text())
+    assert prov["restricted_to_selection"] is True
+
+    # Decay CSV: the pooled counts of the selected pixels, not the whole image.
+    mask = np.zeros(c.model.intensity.shape, bool)
+    for r, cc in px:
+        mask[r, cc] = True
+    want = np.rint(c.model.mask_decay(mask) * mask.sum()).astype(int)
+    with open(paths["decay_csv"]) as fh:
+        rows = list(csvmod.reader(fh))[1:]
+    got = np.array([int(r[1]) for r in rows])
+    assert got.shape == want.shape and (got == want).all()
+    assert got.sum() < c.model.decay.sum(), "restricted decay is a subset"
+
+    # Restricted report: scope stated on the page; the intensity histogram
+    # covers exactly the selected pixels.
+    rpaths = c.export_report(out, restrict=True)
+    lines = c._report_summary_lines(mask=mask)
+    assert any("selection only" in l for l in lines)
+    with open(rpaths["primary_csv"]) as fh:
+        rows = list(csvmod.reader(fh))[1:]
+    assert sum(int(r[2]) for r in rows) == len(px)
+
+    # No selection -> the flag quietly exports the full frame.
+    c._clear_picks()
+    paths2 = c.export(out, options=ExportOptions(restrict_to_selection=True))
+    img2 = tifffile.imread(paths2["raw_tiff"])
+    assert np.isfinite(img2).sum() > len(px)
+    prov2 = json.loads(Path(paths2["provenance"]).read_text())
+    assert prov2["restricted_to_selection"] is False, "no selection, no restriction"
+    print("OK: restrict-to-selection masks raster/decay/report and says so.")
+
+
 def test_no_qt_virtual_shadowing() -> None:
     """No widget attribute may shadow a Qt virtual method.
 
@@ -1603,6 +1663,7 @@ if __name__ == "__main__":
         test_export_dialog_drives_export()
         test_prefs_reopen_last_and_dialog()
         test_one_page_report_ui()
+        test_restrict_export_to_selection()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

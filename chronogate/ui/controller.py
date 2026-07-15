@@ -2593,27 +2593,47 @@ class ViewerController(QObject):
         if self.model is None:
             return {}
         options = options or export_mod.ExportOptions()
+        union = self._union_pick_mask() if options.restrict_to_selection else None
+        if options.restrict_to_selection and union is None:
+            # No selection to restrict to: quietly export the full frame, and
+            # make the provenance say full frame (the flag records what
+            # actually happened, not what was asked for).
+            import dataclasses
+            options = dataclasses.replace(options, restrict_to_selection=False)
         out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports"
         stem = self.model.cube.path.stem
         time_ns = self.model.cube.time_axis_ns
+        decay = self.model.decay
+        if union is not None:
+            # The pooled counts of the selected pixels (mask_decay is per pixel).
+            decay = np.rint(self.model.mask_decay(union) * union.sum())
         # Whatever is picked (a pixel, an ROI, a phasor cluster, a list group) leaves
         # with the export -- otherwise you can select a population and never get it out.
         # (Skipped when deselected in the dialog: the payload is not free to build.)
         selection = self._selection_payload() if options.selection else None
+        sel_tag = "_sel" if union is not None else ""
         if self.mode == "lifetime":
             tau, rl = self._compute_lifetime_map()
+            if union is not None:
+                tau = np.where(union, tau, np.nan)
             vmin, vmax = self._clim_from(tau[np.isfinite(tau)], 2, 98, floor_gap=1e-3)
             (alo, ahi), (blo, bhi) = rl["early"], rl["late"]
-            base = f"{stem}_ch{self.channel}_RLD_A{alo}-{ahi}_B{blo}-{bhi}"
-            paths = export_all(out_dir, base, gated_image=tau, time_ns=time_ns, decay=self.model.decay,
+            base = f"{stem}_ch{self.channel}_RLD_A{alo}-{ahi}_B{blo}-{bhi}{sel_tag}"
+            paths = export_all(out_dir, base, gated_image=tau, time_ns=time_ns, decay=decay,
                                cmap=self.lifetime_cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
                                settings=self._settings(), colorbar_label="apparent lifetime (ns)",
-                               title=f"{self.model.cube.path.name} | RLD τ  (Δt {rl['dt_ns']:.2f} ns)",
+                               title=f"{self.model.cube.path.name} | RLD τ  (Δt {rl['dt_ns']:.2f} ns)"
+                                     + (" | selection only" if union is not None else ""),
                                selection=selection, options=options)
         else:
-            base = f"{stem}_ch{self.channel}_gate{self.gate_lo_bin}-{self.gate_hi_bin}"
+            base = f"{stem}_ch{self.channel}_gate{self.gate_lo_bin}-{self.gate_hi_bin}{sel_tag}"
             display, vmin, vmax = self._current_image_for_export()
-            paths = export_all(out_dir, base, gated_image=display, time_ns=time_ns, decay=self.model.decay,
+            if union is not None:
+                display = np.where(union, display, np.nan)
+                f = display[np.isfinite(display)]
+                if f.size:
+                    vmin, vmax = self._clim_from(f, 1, 99)
+            paths = export_all(out_dir, base, gated_image=display, time_ns=time_ns, decay=decay,
                                cmap=self.cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
                                settings=self._settings(), selection=selection,
                                options=options)
@@ -2646,9 +2666,11 @@ class ViewerController(QObject):
             mask |= self._pick_pixel_mask(p)
         return mask
 
-    def _report_summary_lines(self) -> list[str]:
+    def _report_summary_lines(self, mask: np.ndarray | None = None) -> list[str]:
         """The identity & provenance panel: the headline number with its
-        uncertainty first, then everything needed to regenerate the page."""
+        uncertainty first, then everything needed to regenerate the page.
+        With ``mask``, the headline covers only those pixels and the scope is
+        stated -- a restricted page must say it is restricted."""
         import datetime
         m = self.model
         c = m.cube
@@ -2656,6 +2678,8 @@ class ViewerController(QObject):
         lines = []
         if self.mode == "lifetime":
             tau, _ = self._compute_lifetime_map()
+            if mask is not None:
+                tau = np.where(mask, tau, np.nan)
             f = tau[np.isfinite(tau)]
             if f.size:
                 q1, med, q3 = np.percentile(f, [25, 50, 75])
@@ -2666,16 +2690,23 @@ class ViewerController(QObject):
         elif self.mode == "phasor":
             g, s = self._phasor_maps()
             ok = np.isfinite(g) & np.isfinite(s)
+            if mask is not None:
+                ok &= mask
             cal = "calibrated" if self.phasor_cal else "uncalibrated"
             lines.append(f"phasor centroid g = {g[ok].mean():.3f} ± {g[ok].std():.3f}, "
                          f"s = {s[ok].mean():.3f} ± {s[ok].std():.3f}  "
                          f"(harmonic {self.harmonic}, {cal})")
         else:
             display, _, _ = self._current_image_for_export()
+            if mask is not None:
+                display = np.where(mask, display, np.nan)
             f = display[np.isfinite(display)]
             q1, med, q3 = np.percentile(f, [25, 50, 75]) if f.size else (0, 0, 0)
             lines.append(f"photons in gate: {f.sum():,.0f} total; per px "
                          f"median {med:.0f} (IQR {q1:.0f}–{q3:.0f})")
+        if mask is not None:
+            lines.append(f"scope    selection only — {int(mask.sum()):,} px "
+                         f"of {mask.size:,}")
         lines.append("")
         lines.append(f"source   {c.path.name}   plane {self.z_index + 1}/{max(1, len(self.stack))}"
                      f"   channel {self.channel}")
@@ -2715,19 +2746,28 @@ class ViewerController(QObject):
         lines.append("repro    provenance JSON doubles as a loadable settings file")
         return lines
 
-    def export_report(self, out_dir=None) -> dict:
+    def export_report(self, out_dir=None, restrict: bool = False) -> dict:
         """Write the one-page "everything" report for the current mode; returns
         the path map. The primary panel follows the mode (τ histogram / phasor
         cloud / gated-intensity histogram); the raw numbers behind every panel
-        ship alongside (decay CSV, primary CSV, raw TIFF, provenance JSON)."""
+        ship alongside (decay CSV, primary CSV, raw TIFF, provenance JSON).
+
+        ``restrict=True`` scopes the whole page to the current selection:
+        masked field, selection-pooled decay, selection-only primary/headline
+        -- and the page says so. Without a selection it is a no-op.
+        """
         if self.model is None:
             return {}
         out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports"
         m = self.model
         res = m.resolution_ns
         stem = m.cube.path.stem
-        base = f"{stem}_ch{self.channel}_{self.mode}"
         union = self._union_pick_mask()
+        rmask = union if (restrict and union is not None) else None
+        base = f"{stem}_ch{self.channel}_{self.mode}" + ("_sel" if rmask is not None else "")
+        decay = m.decay
+        if rmask is not None:
+            decay = np.rint(m.mask_decay(rmask) * rmask.sum())
 
         a_ns = gating.gate_bounds_ns(*self._get_gate("A"), res)
         if self.mode == "lifetime":
@@ -2735,38 +2775,57 @@ class ViewerController(QObject):
             gates = [(a_ns[0], a_ns[1], "gate A (early)"),
                      (b_ns[0], b_ns[1], "gate B (late)")]
             tau, _ = self._compute_lifetime_map()
+            if rmask is not None:
+                tau = np.where(rmask, tau, np.nan)
             finite = tau[np.isfinite(tau)]
             vmin, vmax = self._clim_from(finite, 2, 98, floor_gap=1e-3)
             image, cmap, image_label = tau, self.lifetime_cmap, "apparent lifetime (ns)"
             primary = {"kind": "hist", "values": finite, "bins": 40,
-                       "range": (vmin, vmax), "xlabel": "τ (ns)",
-                       "selection": self._selection_tau(tau),
+                       # Restricted: cover the data, don't percentile-clip a
+                       # handful of pixels out of their own histogram.
+                       "range": None if rmask is not None else (vmin, vmax),
+                       "xlabel": "τ (ns)",
+                       "selection": None if rmask is not None else self._selection_tau(tau),
                        "label": "apparent-lifetime distribution (RLD)"}
         else:
             g_ns = gating.gate_bounds_ns(self.gate_lo_bin, self.gate_hi_bin, res)
             gates = [(g_ns[0], g_ns[1], "gate")]
             image, vmin, vmax = self._current_image_for_export()
+            if rmask is not None:
+                image = np.where(rmask, image, np.nan)
+                f = image[np.isfinite(image)]
+                if f.size:
+                    vmin, vmax = self._clim_from(f, 1, 99)
             cmap, image_label = self.cmap, "photons in gate"
             if self.mode == "phasor":
                 g, s = self._phasor_maps()
+                if rmask is not None:
+                    g = np.where(rmask, g, np.nan)
+                    s = np.where(rmask, s, np.nan)
                 cal = "calibrated" if self.phasor_cal else "uncalibrated"
                 primary = {"kind": "phasor", "g": g, "s": s,
                            "label": f"phasor — harmonic {self.harmonic}, {cal}"}
             else:
                 finite = image[np.isfinite(image)]
-                sel = image[union] if union is not None else None
+                sel = (image[union] if (union is not None and rmask is None)
+                       else None)
                 primary = {"kind": "hist", "values": finite, "bins": 40,
-                           "range": (vmin, vmax), "xlabel": "photons in gate",
+                           "range": None if rmask is not None else (vmin, vmax),
+                           "xlabel": "photons in gate",
                            "selection": sel,
                            "label": "gated-intensity distribution"}
+        if rmask is not None:
+            primary["label"] += " — selection only"
 
         paths = export_mod.export_report(
             out_dir, base,
-            metadata={**self._metadata(), "source_sha256": self._source_sha256()},
+            metadata={**self._metadata(), "source_sha256": self._source_sha256(),
+                      "restricted_to_selection": rmask is not None},
             settings=self._settings(),
-            title=f"{m.cube.path.name} — ChronoGate report ({self.mode})",
-            summary_lines=self._report_summary_lines(),
-            time_ns=m.cube.time_axis_ns, decay=m.decay, t0_ns=m.t0_ns(),
+            title=f"{m.cube.path.name} — ChronoGate report ({self.mode}"
+                  + (", selection only)" if rmask is not None else ")"),
+            summary_lines=self._report_summary_lines(mask=rmask),
+            time_ns=m.cube.time_axis_ns, decay=decay, t0_ns=m.t0_ns(),
             gates_ns=gates, primary=primary,
             image=image, cmap=cmap, vmin=vmin, vmax=vmax, image_label=image_label,
             select_mask=union, select_color=theme.SELECT)
@@ -2828,7 +2887,8 @@ class ViewerController(QObject):
                     self.picks = self._picks_for_current_model(live_recipes)[:1]
                 self.export(out_dir, options=options)
                 if options is not None and options.report:
-                    self.export_report(out_dir)      # one page per plane
+                    self.export_report(out_dir,      # one page per plane
+                                       restrict=options.restrict_to_selection)
                 if self.w is not None:
                     self.w.set_progress(i + 1, n)
                     QApplication.processEvents()   # repaint only; controls are disabled
@@ -2885,7 +2945,8 @@ class ViewerController(QObject):
             return
         paths = self.export(dlg.out_dir(), options=options)
         if options.report:
-            paths |= self.export_report(dlg.out_dir())
+            paths |= self.export_report(dlg.out_dir(),
+                                        restrict=options.restrict_to_selection)
         if not paths:
             return
         out_dir = Path(next(iter(paths.values()))).parent

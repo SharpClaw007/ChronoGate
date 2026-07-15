@@ -46,6 +46,13 @@ class ExportOptions:
     # by default so a plain export() keeps writing exactly the classic file set;
     # the orchestration (controller) acts on it, not export_all.
     report: bool = False
+    # Mask everything outside the selected pixels: the raster keeps its
+    # full-frame geometry (coordinates stay valid) but is NaN elsewhere, and the
+    # decay CSV becomes the selection's pooled counts. The caller (controller)
+    # does the masking; export_all only *records* the actual scope in the
+    # provenance -- black pixels that mean "not selected" must never read as
+    # "below threshold".
+    restrict_to_selection: bool = False
 
 
 @dataclass
@@ -297,6 +304,7 @@ def export_all(
         "settings": settings,
         "raw_tiff_dtype": raw_dtype,
         "selection": sel_block,
+        "restricted_to_selection": opts.restrict_to_selection,
         "files": files,
         "omitted": omitted,
     }

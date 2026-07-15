@@ -1,7 +1,7 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.13.1, working tree clean,
-51 tests green (14 in `test_gating.py`, 37 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.14.0, working tree clean,
+52 tests green (14 in `test_gating.py`, 38 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -19,7 +19,19 @@ every change ships with a test and a green run of both suites.
 
 ## Where we left off
 
-Nothing is in progress. v0.13 added the **one-page report** (File ▸ Export
+Nothing is in progress. v0.14 added **restrict-to-selection exports**
+(`ExportOptions.restrict_to_selection`, dialog checkbox, enabled only with a
+selection): rasters keep full-frame geometry but go NaN outside the selection
+(so coordinates stay valid and the TIFF becomes float32), the decay CSV
+becomes the selection's pooled counts (`mask_decay × n`, rinted), the report
+page is fully scoped (masked field, pooled decay, selection-only
+primary/headline, "scope selection only — N px of M" line, `_sel` basename
+suffix, histogram range=None so a percentile clim can't clip a handful of
+pixels out of their own histogram). The provenance records
+`restricted_to_selection` as what *actually happened* — the flag without a
+selection quietly exports the full frame and records false.
+
+v0.13 added the **one-page report** (File ▸ Export
 report… / Ctrl+R), modelled on `export_one-page-result-figure.md` (a
 user-provided recipe; keep following it for report changes). Four roles on a
 2×2 landscape page: identity & provenance text (headline number with IQR

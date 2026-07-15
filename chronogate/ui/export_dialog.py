@@ -53,6 +53,16 @@ class ExportDialog(QDialog):
             "The four-role result page: headline number with uncertainty, decay "
             "diagnostic, primary plot, field — plus the raw numbers behind each "
             "panel and a content-hashed provenance JSON.")
+        self.chk_restrict = QCheckBox("Restrict to selection — mask everything "
+                                      "outside the selected pixels")
+        self.chk_restrict.setEnabled(has_selection)
+        self.chk_restrict.setToolTip(
+            "Rasters keep their full-frame geometry (coordinates stay valid) but "
+            "are NaN outside the selection; the decay CSV becomes the selection's "
+            "pooled counts; the report page covers only the selection. The "
+            "provenance records the restriction." if has_selection else
+            "No selection to restrict to -- pick pixels, draw an ROI or lasso "
+            "the phasor first.")
         for c in (self.chk_raw, self.chk_png, self.chk_decay):
             c.setChecked(True)
         self.chk_sel.setChecked(has_selection)
@@ -76,6 +86,7 @@ class ExportDialog(QDialog):
         pix_row.addWidget(self.chk_pixels)
         wl.addLayout(pix_row)
         wl.addWidget(self.chk_report)
+        wl.addWidget(self.chk_restrict)
         prov_note = QLabel("The provenance JSON (settings, metadata, omissions) "
                            "is always written.")
         prov_note.setStyleSheet("color: palette(mid);")
@@ -143,6 +154,7 @@ class ExportDialog(QDialog):
             selection=self.chk_sel.isChecked(),
             pixel_table=self.chk_pixels.isChecked(),
             report=self.chk_report.isChecked(),
+            restrict_to_selection=self.chk_restrict.isChecked(),
         )
 
     def out_dir(self) -> str:
