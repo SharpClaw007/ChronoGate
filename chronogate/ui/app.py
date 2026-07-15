@@ -37,6 +37,21 @@ def _warn_if_rosetta() -> None:
         pass
 
 
+def _startup_path(path):
+    """What to open at launch: an explicit path always wins; otherwise the
+    last-opened file, if the preference is on and the file still exists;
+    otherwise nothing (the welcome screen)."""
+    if path is not None:
+        return path
+    from pathlib import Path
+    from . import prefs
+    if prefs.reopen_last():
+        last = prefs.last_path()
+        if last and Path(last).exists():
+            return last
+    return None
+
+
 def launch(path=None, channel: int = 0, sum_frames: bool = True,
            settings_path: str | None = None, start_lifetime: bool = False,
            open_dir: str | None = None) -> int:
@@ -70,7 +85,8 @@ def launch(path=None, channel: int = 0, sum_frames: bool = True,
     app.setStyleSheet(theme.CLINICAL_QSS())
     app.setWindowIcon(app_icon())
 
-    win = MainWindow(path, channel=channel, sum_frames=sum_frames, open_dir=open_dir)
+    win = MainWindow(_startup_path(path), channel=channel, sum_frames=sum_frames,
+                     open_dir=open_dir)
     if settings_path and win.controller.model is not None:
         win.controller.apply_settings(load_settings(settings_path))
     if start_lifetime:

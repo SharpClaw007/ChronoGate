@@ -38,7 +38,7 @@ from .. import gating, metrics
 from ..loader import find_stack, load_ptu, FrameCache
 from .. import export as export_mod
 from ..export import export_all, load_settings, save_settings
-from . import theme
+from . import prefs, theme
 
 
 class _DecodeWorker(QObject):
@@ -2245,6 +2245,7 @@ class ViewerController(QObject):
             self.statusMessage.emit(f"Could not load: {err}")
             return
         self.model = gating.GatingModel(cube, bin_factor=self.bin_size)
+        prefs.set_last_path(str(cube.path))   # reopen-last returns to this plane
         self._apply_manual_t0()
         self._validate_picks()
         self._refit_ranges()
@@ -2258,6 +2259,7 @@ class ViewerController(QObject):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.model = self._load_current()
+            prefs.set_last_path(str(self.model.cube.path))
             self._apply_manual_t0()
         finally:
             QApplication.restoreOverrideCursor()
@@ -2351,6 +2353,11 @@ class ViewerController(QObject):
 
         first = self.model is None
         self.model = gating.GatingModel(cube, bin_factor=self.bin_size)
+        # Recorded only on a *successful* decode, so "reopen last at launch"
+        # can never chase a file that failed to open. The plane file itself is
+        # stored (not its folder): find_stack regroups the siblings on reopen,
+        # landing on the same z.
+        prefs.set_last_path(str(cube.path))
         self._apply_manual_t0()
         self.picks = []
         self.pinned_picks = []

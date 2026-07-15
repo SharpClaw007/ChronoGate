@@ -27,6 +27,9 @@ from pathlib import Path
 # Must be set before any Qt import.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MPLBACKEND", "QtAgg")
+# Isolate app preferences: the suite must never read or write the user's real
+# QSettings (every load records a "last opened" path there).
+os.environ["CHRONOGATE_PREFS_INI"] = os.path.join(tempfile.mkdtemp(), "prefs.ini")
 
 try:  # pragma: no cover - environment guard
     import pytest
@@ -1371,6 +1374,63 @@ def test_export_dialog_drives_export() -> None:
     print("OK: export dialog drives export/batch_export; cancel is a no-op.")
 
 
+def test_prefs_reopen_last_and_dialog() -> None:
+    """Preferences: a checkbox makes the app reopen the last .ptu/stack at
+    launch. Loading records the path; the startup path resolves CLI > last-file
+    > welcome; a vanished file falls back to the welcome screen; the dialog
+    reads/writes the pref (Cancel writes nothing)."""
+    from chronogate.ui import prefs
+    from chronogate.ui.app import _startup_path
+    from chronogate.ui.main_window import MainWindow
+
+    ini = str(Path(tempfile.mkdtemp()) / "prefs.ini")
+    saved = os.environ["CHRONOGATE_PREFS_INI"]
+    os.environ["CHRONOGATE_PREFS_INI"] = ini
+    try:
+        assert prefs.reopen_last() is False, "reopen-last defaults to off"
+
+        # A successful load records the file (its plane, not just the folder).
+        w = _window()
+        expect = str(w.controller.model.cube.path)
+        assert prefs.last_path() == expect
+
+        # Stepping planes moves the record: reopen brings back the last VIEWED z.
+        w2 = MainWindow(None, open_dir=str(DATA_DIR))
+        w2.controller.load_folder(str(DATA_DIR))
+        z0_path = str(w2.controller.model.cube.path)
+        w2.controller.step_z(1)
+        expect = str(w2.controller.model.cube.path)
+        assert expect != z0_path and prefs.last_path() == expect
+
+        # Startup resolution: an explicit CLI path always wins; with the pref
+        # off nothing auto-opens; on, the recorded file comes back; a recorded
+        # file that no longer exists means the welcome screen, not a crash.
+        assert _startup_path("/cli/wins.ptu") == "/cli/wins.ptu"
+        assert _startup_path(None) is None
+        prefs.set_reopen_last(True)
+        assert _startup_path(None) == expect
+        prefs.set_last_path("/nope/gone.ptu")
+        assert _startup_path(None) is None
+
+        # The dialog: checkbox mirrors the pref; OK writes, Cancel does not.
+        prefs.set_reopen_last(False)
+        dlg = prefs.PreferencesDialog(w)
+        assert not dlg.chk_reopen.isChecked()
+        dlg.chk_reopen.setChecked(True)
+        dlg.accept()
+        assert prefs.reopen_last() is True
+        dlg2 = prefs.PreferencesDialog(w)
+        dlg2.chk_reopen.setChecked(False)
+        dlg2.reject()
+        assert prefs.reopen_last() is True, "Cancel must not write"
+
+        # Reachable from the menu bar (app menu on macOS via PreferencesRole).
+        assert w.act_prefs.isEnabled()
+    finally:
+        os.environ["CHRONOGATE_PREFS_INI"] = saved
+    print("OK: reopen-last preference (record, resolve, dialog, stale path).")
+
+
 def test_no_qt_virtual_shadowing() -> None:
     """No widget attribute may shadow a Qt virtual method.
 
@@ -1472,6 +1532,7 @@ if __name__ == "__main__":
         test_no_qt_virtual_shadowing()
         test_export_dialog_defaults_and_mapping()
         test_export_dialog_drives_export()
+        test_prefs_reopen_last_and_dialog()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

@@ -194,6 +194,10 @@ class MainWindow(QMainWindow):
         self.pixel_dock = dock
         return dock
 
+    def _show_preferences(self) -> None:
+        from .prefs import PreferencesDialog
+        PreferencesDialog(self).exec()
+
     def _build_actions(self) -> None:
         self.act_open = QAction("&Open .ptu…", self, shortcut=QKeySequence.Open)
         self.act_open_folder = QAction("Open &folder (stack)…", self,
@@ -204,6 +208,10 @@ class MainWindow(QMainWindow):
         self.act_save = QAction("&Save settings", self, shortcut=QKeySequence("Ctrl+S"))
         self.act_load = QAction("&Load settings", self, shortcut=QKeySequence("Ctrl+L"))
         self.act_quit = QAction("&Quit", self, shortcut=QKeySequence.Quit)
+        self.act_prefs = QAction("&Preferences…", self, shortcut=QKeySequence.Preferences)
+        # macOS moves this into the application menu (ChronoGate ▸ Settings…).
+        self.act_prefs.setMenuRole(QAction.MenuRole.PreferencesRole)
+        self.act_prefs.triggered.connect(self._show_preferences)
 
         self.act_intensity = QAction("&Intensity", self, checkable=True, shortcut=QKeySequence("I"))
         self.act_lifetime = QAction("Life&time (RLD)", self, checkable=True, shortcut=QKeySequence("T"))
@@ -258,6 +266,7 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_save)
         m_file.addAction(self.act_load)
         m_file.addSeparator()
+        m_file.addAction(self.act_prefs)
         m_file.addAction(self.act_quit)
 
         m_view = mb.addMenu("&View")

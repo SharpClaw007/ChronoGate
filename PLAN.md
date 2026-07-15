@@ -1,7 +1,7 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.11.0, working tree clean,
-48 tests green (13 in `test_gating.py`, 35 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.12.0, working tree clean,
+49 tests green (13 in `test_gating.py`, 36 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -19,7 +19,20 @@ every change ships with a test and a green run of both suites.
 
 ## Where we left off
 
-Nothing is in progress. v0.10.1 fixed a startup crash (Qt-virtual shadowing —
+Nothing is in progress. v0.12 added **reopen-last-at-launch**
+(`chronogate/ui/prefs.py`): a Preferences dialog (File ▸ Preferences…, macOS
+app menu via `PreferencesRole`) with a checkbox that makes the app open the
+last used .ptu/stack — the last *viewed plane*, recorded on every successful
+decode (`_after_initial_load`, `_after_reload`, `_reload_model_busy`; batch
+export's direct `_load_current` deliberately does not move it). QSettings-
+backed; `CHRONOGATE_PREFS_INI` redirects to an ini so the test suite never
+touches real user config (set globally at the top of `test_ui_smoke.py`).
+Startup resolution lives in `app._startup_path`: CLI path > recorded path (if
+the pref is on and the file still exists) > welcome screen — `MainWindow`
+itself stays dumb, so tests constructing `MainWindow(None)` are unaffected by
+the user's real preference.
+
+v0.10.1 fixed a startup crash (Qt-virtual shadowing —
 see Landmines). v0.11 added the **export dialog**
 (`chronogate/ui/export_dialog.py`): File ▸ Export and File ▸ Export all planes
 both open one dialog choosing the artefacts (raster TIFF / colormapped PNG /
