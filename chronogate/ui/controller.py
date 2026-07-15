@@ -2827,6 +2827,8 @@ class ViewerController(QObject):
                     self.pinned_picks = self._picks_for_current_model(pin_recipes)
                     self.picks = self._picks_for_current_model(live_recipes)[:1]
                 self.export(out_dir, options=options)
+                if options is not None and options.report:
+                    self.export_report(out_dir)      # one page per plane
                 if self.w is not None:
                     self.w.set_progress(i + 1, n)
                     QApplication.processEvents()   # repaint only; controls are disabled
@@ -2882,6 +2884,8 @@ class ViewerController(QObject):
             self.batch_export(dlg.out_dir(), options=options)
             return
         paths = self.export(dlg.out_dir(), options=options)
+        if options.report:
+            paths |= self.export_report(dlg.out_dir())
         if not paths:
             return
         out_dir = Path(next(iter(paths.values()))).parent

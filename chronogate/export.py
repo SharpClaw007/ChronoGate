@@ -42,6 +42,10 @@ class ExportOptions:
     decay_csv: bool = True      # summed decay curve
     selection: bool = True      # label-map TIFF + pooled-decay CSV (if any picks)
     pixel_table: bool = True    # per-pixel metric CSV (can be tens of MB)
+    # The one-page report (PNG + PDF + its panel CSVs, see export_report). Off
+    # by default so a plain export() keeps writing exactly the classic file set;
+    # the orchestration (controller) acts on it, not export_all.
+    report: bool = False
 
 
 @dataclass

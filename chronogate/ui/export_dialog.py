@@ -47,6 +47,12 @@ class ExportDialog(QDialog):
         self.chk_decay = QCheckBox("Summed decay CSV (time_ns, counts)")
         self.chk_sel = QCheckBox("Selection files — label-map TIFF + pooled-decay CSV")
         self.chk_pixels = QCheckBox(self._pixel_table_text(sel_rows, sel_bytes))
+        self.chk_report = QCheckBox("One-page report — PNG + PDF summary figure "
+                                    "with its panel CSVs")
+        self.chk_report.setToolTip(
+            "The four-role result page: headline number with uncertainty, decay "
+            "diagnostic, primary plot, field — plus the raw numbers behind each "
+            "panel and a content-hashed provenance JSON.")
         for c in (self.chk_raw, self.chk_png, self.chk_decay):
             c.setChecked(True)
         self.chk_sel.setChecked(has_selection)
@@ -69,6 +75,7 @@ class ExportDialog(QDialog):
         pix_row.addSpacing(22)                 # indent: child of the selection box
         pix_row.addWidget(self.chk_pixels)
         wl.addLayout(pix_row)
+        wl.addWidget(self.chk_report)
         prov_note = QLabel("The provenance JSON (settings, metadata, omissions) "
                            "is always written.")
         prov_note.setStyleSheet("color: palette(mid);")
@@ -135,6 +142,7 @@ class ExportDialog(QDialog):
             decay_csv=self.chk_decay.isChecked(),
             selection=self.chk_sel.isChecked(),
             pixel_table=self.chk_pixels.isChecked(),
+            report=self.chk_report.isChecked(),
         )
 
     def out_dir(self) -> str:

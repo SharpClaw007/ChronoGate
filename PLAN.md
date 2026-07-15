@@ -1,6 +1,6 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.13.0, working tree clean,
+**State at the end of the last session: v0.13.1, working tree clean,
 51 tests green (14 in `test_gating.py`, 37 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
@@ -33,7 +33,9 @@ PNG **and** PDF by `export._build_report_figure` / `export.export_report`
 alongside (decay CSV, primary CSV, raw TIFF, provenance JSON that doubles as
 a settings file and records the full hash). Controller assembly:
 `_report_summary_lines`, `_source_sha256` (cached per path), `export_report`,
-`_on_export_report`.
+`_on_export_report`. The export dialog offers it too (`chk_report`,
+`ExportOptions.report`, default **off** so a plain `export()` keeps the
+classic file set); in a batch it writes one page per plane.
 
 v0.12 added **reopen-last-at-launch**
 (`chronogate/ui/prefs.py`): a Preferences dialog (File ▸ Preferences…, macOS

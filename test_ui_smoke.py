@@ -1297,6 +1297,10 @@ def test_export_dialog_defaults_and_mapping() -> None:
     dlg.chk_png.setChecked(False)
     assert dlg.options() == ExportOptions(color_png=False, selection=False,
                                           pixel_table=False)
+    # The one-page report is offered too (off by default; it adds its own files).
+    assert not dlg.chk_report.isChecked()
+    dlg.chk_report.setChecked(True)
+    assert dlg.options().report is True
 
     # With a small selection both selection boxes are on; unchecking the parent
     # pulls the pixel table with it. Batch is offered for a stack and can be
@@ -1332,6 +1336,7 @@ def test_export_dialog_drives_export() -> None:
         self.dir_edit.setText(str(out))
         self.chk_png.setChecked(False)
         self.chk_decay.setChecked(False)
+        self.chk_report.setChecked(True)
         return QDialog.Accepted
     ed.ExportDialog.exec = fake_exec
     try:
@@ -1340,10 +1345,13 @@ def test_export_dialog_drives_export() -> None:
         ed.ExportDialog.exec = orig
     names = {p.name for p in out.iterdir()}
     assert any(n.endswith("_gated_raw.tif") for n in names)
-    assert any(n.endswith("_provenance.json") for n in names)
-    assert not any(n.endswith(".png") for n in names)
-    assert not any(n.endswith("_decay.csv") for n in names)
-    prov = json.loads(next(out.glob("*_provenance.json")).read_text())
+    assert any(n.endswith("_gate12-263_provenance.json") for n in names)
+    assert not any(n.endswith("_gated_color.png") for n in names)
+    assert not any(n.endswith("_gate12-263_decay.csv") for n in names)
+    # Ticking the report box writes the one-pager (PNG + PDF) alongside.
+    assert any(n.endswith("_report.png") for n in names)
+    assert any(n.endswith("_report.pdf") for n in names)
+    prov = json.loads(next(out.glob("*_gate12-263_provenance.json")).read_text())
     assert set(prov["omitted"]) == {"color_png", "decay_csv"}
 
     # Cancel writes nothing.
@@ -1364,6 +1372,7 @@ def test_export_dialog_drives_export() -> None:
         self.dir_edit.setText("/batch/out")
         self.chk_batch.setChecked(True)
         self.chk_raw.setChecked(False)
+        self.chk_report.setChecked(True)
         return QDialog.Accepted
     ed.ExportDialog.exec = fake_exec_batch
     try:
@@ -1371,6 +1380,7 @@ def test_export_dialog_drives_export() -> None:
     finally:
         ed.ExportDialog.exec = orig
     assert ran["out_dir"] == "/batch/out" and ran["options"].raw_tiff is False
+    assert ran["options"].report is True, "the report choice must reach the batch"
     print("OK: export dialog drives export/batch_export; cancel is a no-op.")
 
 
