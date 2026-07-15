@@ -415,10 +415,14 @@ class PixelListPanel(QWidget):
         self._sel_timer.setInterval(60)
         self._sel_timer.timeout.connect(self._emit_selection)
 
-        self.metric = QComboBox()
+        # NOT self.metric: QWidget has a virtual metric() (DPI queries), and
+        # PySide6 routes C++ virtual calls through Python attribute lookup — a
+        # QComboBox stored under that name crashes the first devicePixelRatio
+        # probe (e.g. the dock going floating on some display configs).
+        self.metric_box = QComboBox()
         for m in metrics:
-            self.metric.addItem(m.label, m.key)
-        self.metric.setToolTip("Rank and filter the pixels by this quantity.")
+            self.metric_box.addItem(m.label, m.key)
+        self.metric_box.setToolTip("Rank and filter the pixels by this quantity.")
         self.desc = QCheckBox("high→low")
         self.desc.setChecked(True)
         self.desc.setToolTip("Sort direction.")
@@ -462,7 +466,7 @@ class PixelListPanel(QWidget):
         top = QHBoxLayout()
         top.setSpacing(6)
         top.addWidget(QLabel("rank by"))
-        top.addWidget(self.metric, 1)
+        top.addWidget(self.metric_box, 1)
         top.addWidget(self.desc)
         lay.addLayout(top)
         rng = QHBoxLayout()
@@ -483,7 +487,7 @@ class PixelListPanel(QWidget):
         self.btn_refresh.clicked.connect(self.refreshRequested)
 
     def current_metric(self) -> str:
-        return self.metric.currentData()
+        return self.metric_box.currentData()
 
     def set_filter_bounds(self, lo: float, hi: float) -> None:
         """Reset the range boxes to a metric's full span (i.e. filter nothing).

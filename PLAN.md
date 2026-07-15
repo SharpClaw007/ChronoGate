@@ -1,7 +1,7 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.10.0, working tree clean,
-45 tests green (13 in `test_gating.py`, 32 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.10.1, working tree clean,
+46 tests green (13 in `test_gating.py`, 33 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -129,6 +129,16 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
 - **BSD `sed` has no `\b`.** A `sed -i '' 's/\bfoo\b/bar/g'` silently does nothing.
 - **macOS:** run native arm64, never Rosetta; `QFileDialog` must use
   `DontUseNativeDialog`; join the decode `QThread` on close or you get a SIGABRT.
+- **A widget attribute must never share a name with a Qt virtual.** PySide6
+  dispatches C++ virtual calls through Python attribute lookup, so
+  `self.metric = QComboBox()` made Qt's own DPI probe die with
+  `TypeError: Error calling Python override of QWidget::metric(): ... not
+  callable` — instant crash at startup (`dock.setFloating(True)`), and
+  **environment-dependent**: the same tree passed the offscreen smoke one day
+  and crashed the next (display/OS config decides whether Qt calls `metric()`).
+  Guarded by `test_no_qt_virtual_shadowing`, which sweeps every widget for
+  non-callable attributes named after commonly-queried virtuals (`metric`,
+  `event`, `sizeHint`, `paintEngine`, …).
 
 ---
 

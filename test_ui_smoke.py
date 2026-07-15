@@ -542,7 +542,7 @@ def test_pixel_list() -> None:
 
     # Switching metric reseeds the bounds to the new scale (a stale 1..3 filter on
     # phasor g would otherwise match nothing).
-    p.metric.setCurrentIndex([m.key for m in metrics.metrics()].index("total"))
+    p.metric_box.setCurrentIndex([m.key for m in metrics.metrics()].index("total"))
     assert p.current_metric() == "total" and p.table.rowCount() > 0
     lo, hi = metrics.value_range(c._metric_ctx(), "total")
     assert abs(p.fmin.value() - lo) < 1e-6 and abs(p.fmax.value() - hi) < 1e-6
@@ -1259,6 +1259,32 @@ def test_phasor_calibration_ui() -> None:
     print("OK: phasor calibration rotates maps+metrics+plot, persists, and clears.")
 
 
+def test_no_qt_virtual_shadowing() -> None:
+    """No widget attribute may shadow a Qt virtual method.
+
+    PySide6 dispatches C++ virtual calls through Python attribute lookup, so
+    ``self.metric = QComboBox()`` on a widget makes Qt's own DPI query crash with
+    "Error calling Python override of QWidget::metric(): ... not callable" —
+    an instant, data-independent crash the moment Qt asks (e.g. a floating dock
+    resolving its devicePixelRatio). The trigger is environment-dependent
+    (display config), so tests can pass while a real launch dies.
+    """
+    from PySide6.QtWidgets import QWidget
+    # Qt virtuals commonly queried behind the app's back.
+    virtuals = ("metric", "event", "eventFilter", "paintEngine", "devType",
+                "sizeHint", "minimumSizeHint", "heightForWidth",
+                "hasHeightForWidth", "initPainter", "redirected", "sharedPainter")
+    w = _window()
+    offenders = []
+    for widget in [w, *w.findChildren(QWidget)]:
+        for name in virtuals:
+            if name in widget.__dict__ and not callable(widget.__dict__[name]):
+                offenders.append(f"{type(widget).__name__}.{name} = "
+                                 f"{type(widget.__dict__[name]).__name__}")
+    assert not offenders, f"Qt virtuals shadowed by attributes: {offenders}"
+    print("OK: no widget attribute shadows a Qt virtual method.")
+
+
 def test_floor_slider_summed_range_and_scale() -> None:
     import math
     w = _window()
@@ -1331,6 +1357,7 @@ if __name__ == "__main__":
         test_second_harmonic_ui()
         test_phasor_calibration_ui()
         test_floor_slider_summed_range_and_scale()
+        test_no_qt_virtual_shadowing()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

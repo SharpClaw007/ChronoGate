@@ -455,7 +455,7 @@ class ViewerController(QObject):
         w.picks.col.editingFinished.connect(self._on_goto_pixel)
         w.picks.btn_clear.clicked.connect(self._clear_picks)
         w.picks.btn_pin.clicked.connect(self._on_pin)
-        w.pixels.metric.currentIndexChanged.connect(self._on_pixel_metric)
+        w.pixels.metric_box.currentIndexChanged.connect(self._on_pixel_metric)
         w.pixels.desc.toggled.connect(lambda _=None: self.refresh_pixel_list())
         w.pixels.limit.valueChanged.connect(lambda _=None: self.refresh_pixel_list())
         w.pixels.fmin.editingFinished.connect(self.refresh_pixel_list)
@@ -2509,9 +2509,9 @@ class ViewerController(QObject):
         p = self.w.pixels
         key = s.get("metric")
         keys = [m.key for m in metrics.metrics()]
-        with _blocked(p.metric, p.desc, p.limit, p.fmin, p.fmax):
+        with _blocked(p.metric_box, p.desc, p.limit, p.fmin, p.fmax):
             if key in keys:
-                p.metric.setCurrentIndex(keys.index(key))
+                p.metric_box.setCurrentIndex(keys.index(key))
                 self._pixel_key = key      # the saved bounds are for THIS metric
             p.desc.setChecked(bool(s.get("descending", p.desc.isChecked())))
             p.limit.setValue(int(s.get("limit", p.limit.value())))
