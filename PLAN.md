@@ -1,6 +1,6 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.14.1, working tree clean,
+**State at the end of the last session: v0.15.0, working tree clean,
 52 tests green (14 in `test_gating.py`, 38 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
@@ -19,7 +19,15 @@ every change ships with a test and a green run of both suites.
 
 ## Where we left off
 
-Nothing is in progress. v0.14 added **restrict-to-selection exports**
+Nothing is in progress. v0.15 added a **configurable export root**
+(Preferences ▸ "Export folder", `prefs.export_root`, empty = next to the
+opened data): every default destination — export dialog's run-stamped
+suggestion, Ctrl+R report, `batch` subfolder — routes through
+`controller._export_root()`. On this machine the preference is set to
+`/Users/juanq/dev/ChronoGate/chronogate_exports` (per the user; the old
+`3_FLIM_stack_ptu/stack.sptw/chronogate_exports` was physically moved there).
+
+v0.14 added **restrict-to-selection exports**
 (`ExportOptions.restrict_to_selection`, dialog checkbox, enabled only with a
 selection): rasters keep full-frame geometry but go NaN outside the selection
 (so coordinates stay valid and the TIFF becomes float32), the decay CSV

@@ -1415,6 +1415,9 @@ def test_prefs_reopen_last_and_dialog() -> None:
     from chronogate.ui.app import _startup_path
     from chronogate.ui.main_window import MainWindow
 
+    def c_root(win):
+        return str(win.controller._export_root())
+
     ini = str(Path(tempfile.mkdtemp()) / "prefs.ini")
     saved = os.environ["CHRONOGATE_PREFS_INI"]
     os.environ["CHRONOGATE_PREFS_INI"] = ini
@@ -1458,9 +1461,29 @@ def test_prefs_reopen_last_and_dialog() -> None:
 
         # Reachable from the menu bar (app menu on macOS via PreferencesRole).
         assert w.act_prefs.isEnabled()
+
+        # Export root: unset -> exports default next to the opened data; set ->
+        # they go to the chosen folder, and the dialog suggests run-stamps there.
+        assert prefs.export_root() == ""
+        assert c_root(w) == str(w.controller.model.cube.path.parent / "chronogate_exports")
+        custom = str(Path(tempfile.mkdtemp()) / "my_exports")
+        prefs.set_export_root(custom)
+        assert c_root(w) == custom
+        p = w.controller.export()          # no out_dir -> lands under the root
+        assert p and Path(next(iter(p.values()))).parent == Path(custom)
+        # The Preferences dialog edits it; Cancel writes nothing.
+        dlg3 = prefs.PreferencesDialog(w)
+        assert dlg3.export_dir.text() == custom
+        dlg3.export_dir.setText("")
+        dlg3.accept()
+        assert prefs.export_root() == ""
+        dlg4 = prefs.PreferencesDialog(w)
+        dlg4.export_dir.setText("/nope")
+        dlg4.reject()
+        assert prefs.export_root() == ""
     finally:
         os.environ["CHRONOGATE_PREFS_INI"] = saved
-    print("OK: reopen-last preference (record, resolve, dialog, stale path).")
+    print("OK: reopen-last + export-root preferences (record, resolve, dialogs).")
 
 
 def test_one_page_report_ui() -> None:

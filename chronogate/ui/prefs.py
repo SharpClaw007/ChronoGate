@@ -16,12 +16,17 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QPushButton,
     QVBoxLayout,
 )
 
 _KEY_REOPEN = "startup/reopen_last"
 _KEY_LAST_PATH = "startup/last_path"
+_KEY_EXPORT_ROOT = "export/root"
 
 
 def _qsettings() -> QSettings:
@@ -53,6 +58,17 @@ def set_last_path(path: str) -> None:
     s.sync()
 
 
+def export_root() -> str:
+    """A fixed folder for all default exports ('' = next to the opened data)."""
+    return _qsettings().value(_KEY_EXPORT_ROOT, "", type=str)
+
+
+def set_export_root(path: str) -> None:
+    s = _qsettings()
+    s.setValue(_KEY_EXPORT_ROOT, str(path))
+    s.sync()
+
+
 class PreferencesDialog(QDialog):
     """The Preferences window. Reads the stored values on open; writes them
     only on OK (Cancel changes nothing)."""
@@ -72,6 +88,19 @@ class PreferencesDialog(QDialog):
         note.setStyleSheet("color: palette(mid);")
         note.setWordWrap(True)
 
+        self.export_dir = QLineEdit(export_root())
+        self.export_dir.setPlaceholderText("(empty — next to the opened data)")
+        self.export_dir.setToolTip(
+            "Every default export (Export dialog suggestion, Ctrl+R report) goes "
+            "under this folder. Leave empty to export next to the opened .ptu, "
+            "in a chronogate_exports folder.")
+        btn_browse = QPushButton("Browse…")
+        btn_browse.clicked.connect(self._browse_export_dir)
+        export_row = QHBoxLayout()
+        export_row.addWidget(QLabel("Export folder"))
+        export_row.addWidget(self.export_dir, 1)
+        export_row.addWidget(btn_browse)
+
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -79,8 +108,17 @@ class PreferencesDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(self.chk_reopen)
         lay.addWidget(note)
+        lay.addLayout(export_row)
         lay.addWidget(self.buttons)
+
+    def _browse_export_dir(self) -> None:
+        d = QFileDialog.getExistingDirectory(
+            self, "Choose the export folder", self.export_dir.text(),
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
+        if d:
+            self.export_dir.setText(d)
 
     def accept(self) -> None:
         set_reopen_last(self.chk_reopen.isChecked())
+        set_export_root(self.export_dir.text().strip())
         super().accept()

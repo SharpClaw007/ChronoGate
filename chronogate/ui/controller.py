@@ -2579,6 +2579,14 @@ class ViewerController(QObject):
             decays=decays, pixel_columns=["row", "col"] + keys, pixel_blocks=blocks,
             aggregates=aggs)
 
+    def _export_root(self) -> Path:
+        """Where default exports go: the folder from Preferences when set,
+        else a chronogate_exports folder next to the opened data."""
+        root = prefs.export_root()
+        if root:
+            return Path(root)
+        return self.model.cube.path.parent / "chronogate_exports"
+
     def _current_image_for_export(self):
         floor = self._floor_per_pixel() if self.apply_floor else 0.0
         gated = self.model.gate(self.gate_lo_bin, self.gate_hi_bin, floor_per_bin=floor)
@@ -2600,7 +2608,7 @@ class ViewerController(QObject):
             # actually happened, not what was asked for).
             import dataclasses
             options = dataclasses.replace(options, restrict_to_selection=False)
-        out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports"
+        out_dir = Path(out_dir) if out_dir else self._export_root()
         stem = self.model.cube.path.stem
         time_ns = self.model.cube.time_axis_ns
         decay = self.model.decay
@@ -2758,7 +2766,7 @@ class ViewerController(QObject):
         """
         if self.model is None:
             return {}
-        out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports"
+        out_dir = Path(out_dir) if out_dir else self._export_root()
         m = self.model
         res = m.resolution_ns
         stem = m.cube.path.stem
@@ -2870,7 +2878,7 @@ class ViewerController(QObject):
         """
         if self.model is None or not self.stack:
             return 0
-        out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports" / "batch"
+        out_dir = Path(out_dir) if out_dir else self._export_root() / "batch"
         n, saved_z, saved_model = len(self.stack), self.z_index, self.model
         saved_picks, saved_pins = self.picks, self.pinned_picks
         pin_recipes = [(self._pick_recipe(p), p) for p in saved_pins]
@@ -2940,8 +2948,7 @@ class ViewerController(QObject):
             has_selection=bool(self._shown_picks()),
             sel_rows=rows, sel_bytes=nbytes, warn_rows=_PIXEL_TABLE_WARN_ROWS,
             n_planes=len(self.stack),
-            default_dir=str(self.model.cube.path.parent / "chronogate_exports"
-                            / f"run-{stamp}"),
+            default_dir=str(self._export_root() / f"run-{stamp}"),
             batch=batch)
         if dlg.exec() != QDialog.Accepted:
             return
