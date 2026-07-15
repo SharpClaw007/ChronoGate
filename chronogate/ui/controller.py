@@ -2925,9 +2925,14 @@ class ViewerController(QObject):
         checkbox with the size spelled out (announced, never capped)."""
         if self.model is None:
             return
+        import datetime
         from PySide6.QtWidgets import QDialog
         from .export_dialog import ExportDialog
         rows, nbytes = self._selection_size_estimate()
+        # A fresh run-stamped subfolder per dialog: exporting a *subset* into a
+        # folder holding an earlier full export reads as "it ignored my
+        # choices". The folder is only created if the export actually runs.
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         dlg = ExportDialog(
             self.w,
             raster_label="apparent lifetime τ (RLD)" if self.mode == "lifetime"
@@ -2935,7 +2940,8 @@ class ViewerController(QObject):
             has_selection=bool(self._shown_picks()),
             sel_rows=rows, sel_bytes=nbytes, warn_rows=_PIXEL_TABLE_WARN_ROWS,
             n_planes=len(self.stack),
-            default_dir=str(self.model.cube.path.parent / "chronogate_exports"),
+            default_dir=str(self.model.cube.path.parent / "chronogate_exports"
+                            / f"run-{stamp}"),
             batch=batch)
         if dlg.exec() != QDialog.Accepted:
             return

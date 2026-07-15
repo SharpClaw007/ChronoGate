@@ -1359,6 +1359,23 @@ def test_export_dialog_drives_export() -> None:
     prov = json.loads(next(out.glob("*_gate12-263_provenance.json")).read_text())
     assert set(prov["omitted"]) == {"color_png", "decay_csv"}
 
+    # The suggested folder is a fresh run-stamped subfolder: an export into the
+    # default location can never sit next to stale files from an earlier run
+    # (which read as "it exported everything despite my choices").
+    import re
+    seen_dirs = []
+    ed.ExportDialog.exec = lambda self: (seen_dirs.append(self.out_dir()),
+                                         QDialog.Rejected)[1]
+    try:
+        c._on_export()
+    finally:
+        ed.ExportDialog.exec = orig
+    assert re.search(r"chronogate_exports/run-\d{8}-\d{6}$", seen_dirs[0]), seen_dirs
+    # The report box says it brings its own data files.
+    from chronogate.ui.export_dialog import ExportDialog
+    dlg = ExportDialog(w, has_selection=False, n_planes=1, default_dir="/o")
+    assert "own" in dlg.chk_report.text(), "report label states its own files"
+
     # Cancel writes nothing.
     out2 = Path(tempfile.mkdtemp())
     ed.ExportDialog.exec = lambda self: (self.dir_edit.setText(str(out2)),

@@ -1,6 +1,6 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.14.0, working tree clean,
+**State at the end of the last session: v0.14.1, working tree clean,
 52 tests green (14 in `test_gating.py`, 38 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
@@ -182,6 +182,14 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
 - **BSD `sed` has no `\b`.** A `sed -i '' 's/\bfoo\b/bar/g'` silently does nothing.
 - **macOS:** run native arm64, never Rosetta; `QFileDialog` must use
   `DontUseNativeDialog`; join the decode `QThread` on close or you get a SIGABRT.
+- **A reused export folder makes the dialog look broken.** Exporting a
+  *subset* of artefacts into a folder still holding an earlier full export is
+  indistinguishable from "it ignored my checkboxes" (identical basenames, no
+  timestamps a user reads). The dialog therefore suggests a fresh
+  `chronogate_exports/run-<stamp>/` subfolder each time (created only if the
+  export runs). Same illusion from the report checkbox: the report *must*
+  bring its own decay/primary CSVs + TIFF (figure and data travel together),
+  so its label says so.
 - **A widget attribute must never share a name with a Qt virtual.** PySide6
   dispatches C++ virtual calls through Python attribute lookup, so
   `self.metric = QComboBox()` made Qt's own DPI probe die with

@@ -48,7 +48,7 @@ class ExportDialog(QDialog):
         self.chk_sel = QCheckBox("Selection files — label-map TIFF + pooled-decay CSV")
         self.chk_pixels = QCheckBox(self._pixel_table_text(sel_rows, sel_bytes))
         self.chk_report = QCheckBox("One-page report — PNG + PDF summary figure "
-                                    "with its panel CSVs")
+                                    "(brings its own decay/primary CSVs + raw TIFF)")
         self.chk_report.setToolTip(
             "The four-role result page: headline number with uncertainty, decay "
             "diagnostic, primary plot, field — plus the raw numbers behind each "
