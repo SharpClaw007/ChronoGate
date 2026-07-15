@@ -675,8 +675,10 @@ def test_selection_aggregates_in_provenance() -> None:
     c._on_pin()
     c._on_pixel_rows([(10, 20), (11, 21), (12, 22)])
 
+    from chronogate.export import ExportOptions
     out = Path(tempfile.mkdtemp())
-    paths = c.export(out, include_pixel_table=False)   # aggregates are cheap: always on
+    # Aggregates are cheap: they ride along even with the pixel table omitted.
+    paths = c.export(out, options=ExportOptions(pixel_table=False))
     sel = json.loads(Path(paths["provenance"]).read_text())["selection"]
     aggs = sel["aggregates"]
     assert len(aggs) == 2 == len(sel["labels"]), "one aggregate block per label"
@@ -702,11 +704,14 @@ def test_big_pixel_table_warning_and_optout() -> None:
     w = _window()
     c = w.controller
 
+    from chronogate.export import ExportOptions
+    from chronogate.ui.export_dialog import ExportDialog
+
     # Opting out of the pixel table still exports the mask and pooled decays,
     # and the provenance says the table was omitted rather than staying silent.
     c._on_pixel_rows([(10, 20), (11, 21), (12, 22)])
     out = Path(tempfile.mkdtemp())
-    paths = c.export(out, include_pixel_table=False)
+    paths = c.export(out, options=ExportOptions(pixel_table=False))
     assert "selection_mask" in paths and "selection_decay" in paths
     assert "selection_pixels" not in paths and not list(out.glob("*_selection_pixels.csv"))
     prov = json.loads(Path(paths["provenance"]).read_text())
@@ -717,22 +722,26 @@ def test_big_pixel_table_warning_and_optout() -> None:
     rows, nbytes = c._selection_size_estimate()
     assert rows == 3 and nbytes > 0
 
-    # A small selection exports without asking; a huge one asks first, and "no"
-    # flows through to the export as include_pixel_table=False.
-    asked = []
-    seen = {}
-    c._ask_big_table = lambda rows, nbytes: (asked.append(rows), False)[1]
-    c.export = lambda out_dir=None, include_pixel_table=True: (
-        seen.update(ipt=include_pixel_table) or {})
-    c._on_export()
-    assert not asked and seen["ipt"] is True, "small selections must not nag"
+    # In the export dialog a small selection pre-checks the pixel table; a huge
+    # one starts unchecked (never capped -- the box is right there to tick) and
+    # its label announces the row count and the approximate size.
+    dlg = ExportDialog(w, has_selection=True, sel_rows=rows, sel_bytes=nbytes,
+                       n_planes=1, default_dir="/o")
+    assert dlg.chk_pixels.isChecked() and dlg.chk_pixels.isEnabled()
 
     big = np.ones(c.model.intensity.shape, dtype=bool)
     c._add_pick({"kind": "mask", "mask": big, "label": "everything"})
-    c._on_export()
-    assert asked and asked[0] == int(big.sum())
-    assert seen["ipt"] is False, "declining the big table must reach the export"
-    print("OK: big pixel tables are announced (row count + size) and can be skipped.")
+    rows2, nbytes2 = c._selection_size_estimate()
+    assert rows2 >= int(big.sum())
+    dlg2 = ExportDialog(w, has_selection=True, sel_rows=rows2, sel_bytes=nbytes2,
+                        n_planes=1, default_dir="/o")
+    assert dlg2.chk_pixels.isEnabled() and not dlg2.chk_pixels.isChecked(), \
+        "a huge table starts opted out, not silently written"
+    assert "MB" in dlg2.chk_pixels.text() and f"{rows2:,}" in dlg2.chk_pixels.text()
+    assert dlg2.options().pixel_table is False
+    dlg2.chk_pixels.setChecked(True)          # never capped: one click re-opts in
+    assert dlg2.options().pixel_table is True
+    print("OK: big pixel tables are announced (row count + size) and start opted out.")
 
 
 def test_settings_roundtrip_restores_selection() -> None:
@@ -1259,6 +1268,109 @@ def test_phasor_calibration_ui() -> None:
     print("OK: phasor calibration rotates maps+metrics+plot, persists, and clears.")
 
 
+def test_export_dialog_defaults_and_mapping() -> None:
+    """The export dialog: choose the artefacts, their parameters and the folder.
+
+    Defaults mirror the old always-everything export; the selection artefacts
+    are only offered when a selection exists; the per-pixel table starts
+    unchecked for huge selections (announced, never capped); batch is only
+    offered for a multi-plane stack; an empty folder cannot be accepted.
+    """
+    from PySide6.QtWidgets import QDialogButtonBox
+    from chronogate.export import ExportOptions
+    from chronogate.ui.export_dialog import ExportDialog
+
+    w = _window()
+    # No selection: selection artefacts off + disabled, everything else on.
+    dlg = ExportDialog(w, raster_label="gated intensity", has_selection=False,
+                       n_planes=1, default_dir="/somewhere/out")
+    assert dlg.chk_raw.isChecked() and dlg.chk_png.isChecked() and dlg.chk_decay.isChecked()
+    assert not dlg.chk_sel.isEnabled() and not dlg.chk_sel.isChecked()
+    assert not dlg.chk_pixels.isEnabled()
+    assert not dlg.chk_batch.isEnabled(), "single plane offers no batch"
+    assert dlg.out_dir() == "/somewhere/out"
+    assert dlg.options() == ExportOptions(selection=False, pixel_table=False)
+    assert "gated intensity" in dlg.chk_raw.text()
+    dlg.chk_png.setChecked(False)
+    assert dlg.options() == ExportOptions(color_png=False, selection=False,
+                                          pixel_table=False)
+
+    # With a small selection both selection boxes are on; unchecking the parent
+    # pulls the pixel table with it. Batch is offered for a stack and can be
+    # pre-checked (the Export-all-planes menu entry).
+    d2 = ExportDialog(w, raster_label="apparent lifetime τ", has_selection=True,
+                      sel_rows=3, sel_bytes=120, n_planes=4, default_dir="/o",
+                      batch=True)
+    assert d2.chk_sel.isChecked() and d2.chk_pixels.isChecked()
+    assert d2.chk_batch.isEnabled() and d2.chk_batch.isChecked() and d2.batch()
+    d2.chk_sel.setChecked(False)
+    assert not d2.chk_pixels.isEnabled()
+    assert d2.options().selection is False and d2.options().pixel_table is False
+    ok = d2.buttons.button(QDialogButtonBox.Ok)
+    d2.dir_edit.setText("")
+    assert not ok.isEnabled(), "no folder, no export"
+    d2.dir_edit.setText("/o")
+    assert ok.isEnabled()
+    print("OK: export dialog maps checkboxes/folder/batch onto ExportOptions.")
+
+
+def test_export_dialog_drives_export() -> None:
+    """Accepting the dialog exports exactly the chosen artefacts to the chosen
+    folder; cancelling exports nothing; the provenance names what was omitted;
+    the batch checkbox routes to batch_export."""
+    from PySide6.QtWidgets import QDialog
+    from chronogate.ui import export_dialog as ed
+
+    w = _window()
+    c = w.controller
+    out = Path(tempfile.mkdtemp())
+    orig = ed.ExportDialog.exec
+    def fake_exec(self):
+        self.dir_edit.setText(str(out))
+        self.chk_png.setChecked(False)
+        self.chk_decay.setChecked(False)
+        return QDialog.Accepted
+    ed.ExportDialog.exec = fake_exec
+    try:
+        c._on_export()
+    finally:
+        ed.ExportDialog.exec = orig
+    names = {p.name for p in out.iterdir()}
+    assert any(n.endswith("_gated_raw.tif") for n in names)
+    assert any(n.endswith("_provenance.json") for n in names)
+    assert not any(n.endswith(".png") for n in names)
+    assert not any(n.endswith("_decay.csv") for n in names)
+    prov = json.loads(next(out.glob("*_provenance.json")).read_text())
+    assert set(prov["omitted"]) == {"color_png", "decay_csv"}
+
+    # Cancel writes nothing.
+    out2 = Path(tempfile.mkdtemp())
+    ed.ExportDialog.exec = lambda self: (self.dir_edit.setText(str(out2)),
+                                         QDialog.Rejected)[1]
+    try:
+        c._on_export()
+    finally:
+        ed.ExportDialog.exec = orig
+    assert not list(out2.iterdir()), "cancelled dialog must export nothing"
+
+    # The batch checkbox routes to batch_export with the same options + folder.
+    ran = {}
+    c.batch_export = lambda out_dir=None, options=None: ran.update(
+        out_dir=out_dir, options=options) or 1
+    def fake_exec_batch(self):
+        self.dir_edit.setText("/batch/out")
+        self.chk_batch.setChecked(True)
+        self.chk_raw.setChecked(False)
+        return QDialog.Accepted
+    ed.ExportDialog.exec = fake_exec_batch
+    try:
+        c._on_batch_export()
+    finally:
+        ed.ExportDialog.exec = orig
+    assert ran["out_dir"] == "/batch/out" and ran["options"].raw_tiff is False
+    print("OK: export dialog drives export/batch_export; cancel is a no-op.")
+
+
 def test_no_qt_virtual_shadowing() -> None:
     """No widget attribute may shadow a Qt virtual method.
 
@@ -1358,6 +1470,8 @@ if __name__ == "__main__":
         test_phasor_calibration_ui()
         test_floor_slider_summed_range_and_scale()
         test_no_qt_virtual_shadowing()
+        test_export_dialog_defaults_and_mapping()
+        test_export_dialog_drives_export()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

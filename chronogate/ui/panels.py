@@ -653,7 +653,8 @@ class FilePanel(QGroupBox):
         self.btn_open_folder.setToolTip("Open a folder and load its .ptu stack (z-series).")
         self.btn_export = QPushButton("Export")
         self.btn_export.setProperty("accent", True)
-        self.btn_export.setToolTip("Write TIFF + colormapped PNG + decay CSV + provenance JSON.")
+        self.btn_export.setToolTip("Choose what to export (TIFF / PNG / CSV / selection), "
+                                   "any parameters, and the output folder.")
         self.btn_save = QPushButton("Save settings")
         self.btn_load = QPushButton("Load settings")
 

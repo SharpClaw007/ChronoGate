@@ -198,7 +198,7 @@ class MainWindow(QMainWindow):
         self.act_open = QAction("&Open .ptu…", self, shortcut=QKeySequence.Open)
         self.act_open_folder = QAction("Open &folder (stack)…", self,
                                        shortcut=QKeySequence("Ctrl+Shift+O"))
-        self.act_export = QAction("&Export", self, shortcut=QKeySequence("Ctrl+E"))
+        self.act_export = QAction("&Export…", self, shortcut=QKeySequence("Ctrl+E"))
         self.act_batch = QAction("Export &all planes (batch)…", self,
                                  shortcut=QKeySequence("Ctrl+Shift+E"))
         self.act_save = QAction("&Save settings", self, shortcut=QKeySequence("Ctrl+S"))
@@ -243,7 +243,9 @@ class MainWindow(QMainWindow):
         self.act_about = QAction("&About ChronoGate", self)
         self.act_open.setToolTip("Open a .ptu file or stack layer")
         self.act_open_folder.setToolTip("Open a folder and load its .ptu stack")
-        self.act_export.setToolTip("Export the current view (TIFF + PNG + CSV + provenance)")
+        self.act_export.setToolTip(
+            "Export the current view — choose the artefacts (TIFF/PNG/CSV/selection), "
+            "the folder, and single plane vs whole stack")
 
     def _build_menus(self) -> None:
         mb = self.menuBar()

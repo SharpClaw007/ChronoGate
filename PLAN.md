@@ -1,7 +1,7 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.10.1, working tree clean,
-46 tests green (13 in `test_gating.py`, 33 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.11.0, working tree clean,
+48 tests green (13 in `test_gating.py`, 35 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -19,12 +19,22 @@ every change ships with a test and a green run of both suites.
 
 ## Where we left off
 
-Nothing is in progress. Two sessions back (v0.9) closed the original seven-item
-improvement list (selection stats, group compare, big-CSV ask, batch selection
-re-cut, phasor calibration, `_lifetime_init` defused, gridlines-under-hexbin).
-The last session (v0.10) closed **all six candidates from the v0.9 handoff**,
-one commit each, then passed an adversarial diff review (no findings) and an
-offscreen full-feature launch smoke:
+Nothing is in progress. v0.10.1 fixed a startup crash (Qt-virtual shadowing —
+see Landmines). v0.11 added the **export dialog**
+(`chronogate/ui/export_dialog.py`): File ▸ Export and File ▸ Export all planes
+both open one dialog choosing the artefacts (raster TIFF / colormapped PNG /
+decay CSV / selection files / per-pixel table with its size announced), the
+output folder, and single-plane vs batch; the choices land in
+`export.ExportOptions` (frozen dataclass, Qt-free), which
+`controller.export` / `batch_export` and `export_all` all take. Provenance is
+always written and records skipped artefacts under `"omitted"`.
+
+Earlier: v0.9 closed the original seven-item improvement list (selection
+stats, group compare, big-CSV ask, batch selection re-cut, phasor calibration,
+`_lifetime_init` defused, gridlines-under-hexbin). v0.10 closed **all six
+candidates from the v0.9 handoff**, one commit each, then passed an
+adversarial diff review (no findings) and an offscreen full-feature launch
+smoke:
 
 1. **Shared τ-map cache.** `MetricContext.tau_fn` (the `phasor_fn` pattern) +
    `controller._tau_map()`, keyed on (model-weakref, RLD gates, floor, min
@@ -174,7 +184,12 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
   gate, because quoting τ for gates the view no longer shows is worse than a
   slightly different estimate. Do not "unify" these.
 - **The big pixel table asks; it never caps.** It is the data the user asked for.
-  The ask threshold is `_PIXEL_TABLE_WARN_ROWS` (100k rows ≈ several MB).
+  Since v0.11 the "ask" is the export dialog's pixel-table checkbox starting
+  unchecked (row count + ~MB in its label) above `_PIXEL_TABLE_WARN_ROWS`
+  (100k rows ≈ several MB) — one click re-opts in.
+- **The provenance JSON is not a dialog checkbox.** Whatever artefact subset is
+  picked, the sidecar is written and lists the skipped artefacts under
+  `"omitted"` — an export you cannot reproduce is not an export.
 - **Batch export re-cuts lassos per plane** (a lifetime signature means something
   on every plane; the drawing plane's pixel mask does not). Located picks —
   pixels, ROIs, coordinate groups — carry across unchanged.

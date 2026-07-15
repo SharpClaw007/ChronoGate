@@ -2581,16 +2581,18 @@ class ViewerController(QObject):
         vmin, vmax = self._clim_from(display[np.isfinite(display)], 1, 99)
         return display, vmin, vmax
 
-    def export(self, out_dir=None, include_pixel_table: bool = True) -> dict:
+    def export(self, out_dir=None, options: export_mod.ExportOptions | None = None) -> dict:
         """Write the current view's export artefacts; returns the path map."""
         if self.model is None:
             return {}
+        options = options or export_mod.ExportOptions()
         out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports"
         stem = self.model.cube.path.stem
         time_ns = self.model.cube.time_axis_ns
         # Whatever is picked (a pixel, an ROI, a phasor cluster, a list group) leaves
         # with the export -- otherwise you can select a population and never get it out.
-        selection = self._selection_payload()
+        # (Skipped when deselected in the dialog: the payload is not free to build.)
+        selection = self._selection_payload() if options.selection else None
         if self.mode == "lifetime":
             tau, rl = self._compute_lifetime_map()
             vmin, vmax = self._clim_from(tau[np.isfinite(tau)], 2, 98, floor_gap=1e-3)
@@ -2600,14 +2602,14 @@ class ViewerController(QObject):
                                cmap=self.lifetime_cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
                                settings=self._settings(), colorbar_label="apparent lifetime (ns)",
                                title=f"{self.model.cube.path.name} | RLD τ  (Δt {rl['dt_ns']:.2f} ns)",
-                               selection=selection, include_pixel_table=include_pixel_table)
+                               selection=selection, options=options)
         else:
             base = f"{stem}_ch{self.channel}_gate{self.gate_lo_bin}-{self.gate_hi_bin}"
             display, vmin, vmax = self._current_image_for_export()
             paths = export_all(out_dir, base, gated_image=display, time_ns=time_ns, decay=self.model.decay,
                                cmap=self.cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
                                settings=self._settings(), selection=selection,
-                               include_pixel_table=include_pixel_table)
+                               options=options)
         return paths
 
     def _picks_for_current_model(self, recipes: list[tuple[dict, dict]]) -> list[dict]:
@@ -2628,7 +2630,7 @@ class ViewerController(QObject):
                 out.append(pick)
         return out
 
-    def batch_export(self, out_dir=None, include_pixel_table: bool = True) -> int:
+    def batch_export(self, out_dir=None, options: export_mod.ExportOptions | None = None) -> int:
         """Apply the current gate/floor/threshold/mode to *every* plane of the
         stack and export each (TIFF/PNG/CSV/provenance). Returns the plane count.
 
@@ -2654,7 +2656,7 @@ class ViewerController(QObject):
                 if has_picks:
                     self.pinned_picks = self._picks_for_current_model(pin_recipes)
                     self.picks = self._picks_for_current_model(live_recipes)[:1]
-                self.export(out_dir, include_pixel_table=include_pixel_table)
+                self.export(out_dir, options=options)
                 if self.w is not None:
                     self.w.set_progress(i + 1, n)
                     QApplication.processEvents()   # repaint only; controls are disabled
@@ -2668,17 +2670,7 @@ class ViewerController(QObject):
         return n
 
     def _on_batch_export(self) -> None:
-        if self.model is None:
-            return
-        if len(self.stack) <= 1:
-            self.statusMessage.emit("Batch export needs a multi-plane stack; use Export for a single file.")
-            return
-        directory = QFileDialog.getExistingDirectory(
-            self.w, "Choose an output folder for the batch export", self._dialog_dir(),
-            QFileDialog.Option.ShowDirsOnly | _DLG_OPT)
-        if directory:
-            # One answer covers every plane (the same selection is applied to each).
-            self.batch_export(directory, include_pixel_table=self._confirm_pixel_table())
+        self._run_export_dialog(batch=True)
 
     def _selection_size_estimate(self) -> tuple[int, int]:
         """(rows, approx bytes) of the selection pixel table, without building it.
@@ -2692,27 +2684,34 @@ class ViewerController(QObject):
         cols = len(metrics.metrics()) + 3        # selection label, row, col, metrics
         return rows, rows * cols * 9
 
-    def _ask_big_table(self, rows: int, nbytes: int) -> bool:
-        """Confirm writing a many-megabyte pixel CSV. Never caps -- only asks."""
-        from PySide6.QtWidgets import QMessageBox
-        resp = QMessageBox.question(
-            self.w, "Large pixel table",
-            f"The selection covers {rows:,} pixels, so the per-pixel metric table "
-            f"will be roughly {max(1, round(nbytes / 1e6))} MB of CSV.\n\n"
-            f"Write the pixel table? (The label map and pooled decays are written "
-            f"either way.)",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        return resp == QMessageBox.Yes
-
-    def _confirm_pixel_table(self) -> bool:
-        rows, nbytes = self._selection_size_estimate()
-        if rows <= _PIXEL_TABLE_WARN_ROWS:
-            return True
-        return self._ask_big_table(rows, nbytes)
-
     def _on_export(self) -> None:
-        include = self._confirm_pixel_table()
-        paths = self.export(include_pixel_table=include)
+        self._run_export_dialog(batch=False)
+
+    def _run_export_dialog(self, batch: bool) -> None:
+        """One dialog for both export entries: what to write, where, one plane
+        or all. The big-pixel-table ask lives here too, as a pre-unchecked
+        checkbox with the size spelled out (announced, never capped)."""
+        if self.model is None:
+            return
+        from PySide6.QtWidgets import QDialog
+        from .export_dialog import ExportDialog
+        rows, nbytes = self._selection_size_estimate()
+        dlg = ExportDialog(
+            self.w,
+            raster_label="apparent lifetime τ (RLD)" if self.mode == "lifetime"
+                         else "gated intensity",
+            has_selection=bool(self._shown_picks()),
+            sel_rows=rows, sel_bytes=nbytes, warn_rows=_PIXEL_TABLE_WARN_ROWS,
+            n_planes=len(self.stack),
+            default_dir=str(self.model.cube.path.parent / "chronogate_exports"),
+            batch=batch)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        options = dlg.options()
+        if dlg.batch():
+            self.batch_export(dlg.out_dir(), options=options)
+            return
+        paths = self.export(dlg.out_dir(), options=options)
         if not paths:
             return
         out_dir = Path(next(iter(paths.values()))).parent

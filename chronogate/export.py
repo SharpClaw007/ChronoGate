@@ -31,6 +31,19 @@ import numpy as np
 import tifffile
 
 
+@dataclass(frozen=True)
+class ExportOptions:
+    """Which artefacts an export writes. Provenance is not optional: whatever
+    subset the user picks, the sidecar records the choices (and the omissions),
+    or the export is not reproducible."""
+
+    raw_tiff: bool = True       # raw-value raster (intensity or τ), for ImageJ
+    color_png: bool = True      # colormapped figure with colorbar
+    decay_csv: bool = True      # summed decay curve
+    selection: bool = True      # label-map TIFF + pooled-decay CSV (if any picks)
+    pixel_table: bool = True    # per-pixel metric CSV (can be tens of MB)
+
+
 @dataclass
 class Selection:
     """The pixels the user has selected, in a form that can leave the program.
@@ -186,7 +199,7 @@ def export_all(
     colorbar_label: str = "photons in gate",
     title: str | None = None,
     selection: Selection | None = None,
-    include_pixel_table: bool = True,
+    options: ExportOptions | None = None,
 ) -> dict[str, str]:
     """Write the export artefacts. Returns a map of role -> file path.
 
@@ -196,10 +209,14 @@ def export_all(
 
     When ``selection`` is given, three more files carry the selected pixels out
     (label-map TIFF, pooled-decay CSV, per-pixel metric CSV) and the provenance
-    records what each selection was. ``include_pixel_table=False`` skips the
-    per-pixel CSV -- a 160k-pixel selection is a ~10 MB table -- and the
-    provenance states the omission instead of staying silent.
+    records what each selection was.
+
+    ``options`` chooses the subset of artefacts to write (default: everything).
+    The provenance JSON is always written, and lists every artefact skipped by
+    choice under ``"omitted"`` instead of staying silent -- ``pixel_table=False``
+    in particular skips the per-pixel CSV (a 160k-pixel selection is ~10 MB).
     """
+    opts = options or ExportOptions()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -214,27 +231,40 @@ def export_all(
             f"{settings.get('gate_lo_ns', '?')}-{settings.get('gate_hi_ns', '?')} ns"
         )
 
-    raw_dtype = _write_raw_tiff(raw_path, gated_image, {**metadata, "settings": settings})
-    _write_color_png(
-        png_path,
-        gated_image,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        title=title,
-        colorbar_label=colorbar_label,
-    )
-    _write_decay_csv(csv_path, time_ns, decay)
+    paths: dict[str, str] = {}
+    omitted: list[str] = []
+    raw_dtype: str | None = None
+    if opts.raw_tiff:
+        raw_dtype = _write_raw_tiff(raw_path, gated_image, {**metadata, "settings": settings})
+        paths["raw_tiff"] = str(raw_path)
+    else:
+        omitted.append("raw_tiff")
+    if opts.color_png:
+        _write_color_png(
+            png_path,
+            gated_image,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            title=title,
+            colorbar_label=colorbar_label,
+        )
+        paths["color_png"] = str(png_path)
+    else:
+        omitted.append("color_png")
+    if opts.decay_csv:
+        _write_decay_csv(csv_path, time_ns, decay)
+        paths["decay_csv"] = str(csv_path)
+    else:
+        omitted.append("decay_csv")
 
-    paths = {
-        "raw_tiff": str(raw_path),
-        "color_png": str(png_path),
-        "decay_csv": str(csv_path),
-    }
     files = {k: Path(v).name for k, v in paths.items()}
-    sel_block: dict[str, Any] | None = None
+    sel_block: dict[str, Any] | str | None = None
 
-    if selection is not None and selection.labels:
+    if selection is not None and selection.labels and not opts.selection:
+        omitted.append("selection")
+        sel_block = "omitted (user choice)"
+    elif selection is not None and selection.labels:
         mask_path = out_dir / f"{base}_selection_mask.tif"
         sdec_path = out_dir / f"{base}_selection_decay.csv"
         _write_selection_mask(mask_path, selection, {**metadata, "settings": settings})
@@ -248,13 +278,14 @@ def export_all(
             "label_map_values": "0 = unselected; k = the k-th label above",
             "aggregates": selection.aggregates,
         }
-        if include_pixel_table:
+        if opts.pixel_table:
             spix_path = out_dir / f"{base}_selection_pixels.csv"
             _write_selection_pixels_csv(spix_path, selection)
             paths["selection_pixels"] = str(spix_path)
             files["selection_pixels"] = spix_path.name
         else:
             sel_block["pixel_table"] = "omitted (large selection; user choice)"
+            omitted.append("selection_pixels")
 
     provenance = {
         "tool": "ChronoGate",
@@ -263,6 +294,7 @@ def export_all(
         "raw_tiff_dtype": raw_dtype,
         "selection": sel_block,
         "files": files,
+        "omitted": omitted,
     }
     json_path.write_text(json.dumps(provenance, indent=2, default=str))
     paths["provenance"] = str(json_path)
