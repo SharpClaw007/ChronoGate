@@ -1,7 +1,7 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.12.0, working tree clean,
-49 tests green (13 in `test_gating.py`, 36 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.13.0, working tree clean,
+51 tests green (14 in `test_gating.py`, 37 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -19,7 +19,23 @@ every change ships with a test and a green run of both suites.
 
 ## Where we left off
 
-Nothing is in progress. v0.12 added **reopen-last-at-launch**
+Nothing is in progress. v0.13 added the **one-page report** (File ▸ Export
+report… / Ctrl+R), modelled on `export_one-page-result-figure.md` (a
+user-provided recipe; keep following it for report changes). Four roles on a
+2×2 landscape page: identity & provenance text (headline number with IQR
+first, sha256 content hash of the source .ptu, acquisition/analysis settings,
+versions, date), the summed decay with gate spans + t0 + cumulative-fraction
+twin axis, a mode-aware primary plot (τ histogram with median/IQR band and
+selection overlay · phasor hexbin + semicircle · gated-intensity histogram),
+and the field with colorbar + selection outline. Written headless (Agg) as
+PNG **and** PDF by `export._build_report_figure` / `export.export_report`
+(data-only args, matplotlib imported lazily); every panel's numbers ship
+alongside (decay CSV, primary CSV, raw TIFF, provenance JSON that doubles as
+a settings file and records the full hash). Controller assembly:
+`_report_summary_lines`, `_source_sha256` (cached per path), `export_report`,
+`_on_export_report`.
+
+v0.12 added **reopen-last-at-launch**
 (`chronogate/ui/prefs.py`): a Preferences dialog (File ▸ Preferences…, macOS
 app menu via `PreferencesRole`) with a checkbox that makes the app open the
 last used .ptu/stack — the last *viewed plane*, recorded on every successful
@@ -167,10 +183,10 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
 
 ## Next candidates (nothing committed to; ranked as I'd do them)
 
-1. **Export the phasor plot.** Export covers the intensity/lifetime rasters; in
-   phasor mode you get the intensity export. A calibrated phasor figure (hexbin +
-   semicircle + ruler + lasso) is a paper panel and should be exportable as PNG,
-   with (g, s) maps as TIFFs for people who compute their own fractions.
+1. **Export the phasor plot.** Largely covered by the v0.13 one-page report
+   (phasor mode: hexbin + semicircle panel, (g, s) rows as CSV). Still missing:
+   the calibration ruler/lasso on the report panel, and the (g, s) maps as
+   TIFFs for people who compute their own fractions.
 2. **Redo.** Undo exists; a redo stack is its natural complement (undo currently
    discards the popped state).
 3. **A visible calibration readout.** The calibration lives only in the phasor

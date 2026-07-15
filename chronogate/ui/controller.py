@@ -2619,6 +2619,169 @@ class ViewerController(QObject):
                                options=options)
         return paths
 
+    # ------------------------------------------------------- one-page report
+    def _source_sha256(self) -> str:
+        """Content hash of the current plane's .ptu ("library X" can mean two
+        different files; a sha256 cannot). Cached per path -- hashing a few
+        hundred MB is fine once, not on every summary rebuild."""
+        import hashlib
+        key = str(self.model.cube.path)
+        cached = getattr(self, "_sha256_cache", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        h = hashlib.sha256()
+        with open(key, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        self._sha256_cache = (key, h.hexdigest())
+        return self._sha256_cache[1]
+
+    def _union_pick_mask(self) -> np.ndarray | None:
+        """One boolean mask covering every shown pick (None when no picks)."""
+        picks = self._shown_picks()
+        if not picks:
+            return None
+        mask = np.zeros(self.model.intensity.shape, dtype=bool)
+        for p in picks:
+            mask |= self._pick_pixel_mask(p)
+        return mask
+
+    def _report_summary_lines(self) -> list[str]:
+        """The identity & provenance panel: the headline number with its
+        uncertainty first, then everything needed to regenerate the page."""
+        import datetime
+        m = self.model
+        c = m.cube
+        res = m.resolution_ns
+        lines = []
+        if self.mode == "lifetime":
+            tau, _ = self._compute_lifetime_map()
+            f = tau[np.isfinite(tau)]
+            if f.size:
+                q1, med, q3 = np.percentile(f, [25, 50, 75])
+                lines.append(f"median τ = {med:.3f} ns  "
+                             f"(IQR {q1:.3f}–{q3:.3f}, n={f.size:,} px)")
+            else:
+                lines.append("median τ = n/a — no pixel passed the RLD gates")
+        elif self.mode == "phasor":
+            g, s = self._phasor_maps()
+            ok = np.isfinite(g) & np.isfinite(s)
+            cal = "calibrated" if self.phasor_cal else "uncalibrated"
+            lines.append(f"phasor centroid g = {g[ok].mean():.3f} ± {g[ok].std():.3f}, "
+                         f"s = {s[ok].mean():.3f} ± {s[ok].std():.3f}  "
+                         f"(harmonic {self.harmonic}, {cal})")
+        else:
+            display, _, _ = self._current_image_for_export()
+            f = display[np.isfinite(display)]
+            q1, med, q3 = np.percentile(f, [25, 50, 75]) if f.size else (0, 0, 0)
+            lines.append(f"photons in gate: {f.sum():,.0f} total; per px "
+                         f"median {med:.0f} (IQR {q1:.0f}–{q3:.0f})")
+        lines.append("")
+        lines.append(f"source   {c.path.name}   plane {self.z_index + 1}/{max(1, len(self.stack))}"
+                     f"   channel {self.channel}")
+        lines.append(f"sha256   {self._source_sha256()[:16]}…  (full hash in provenance JSON)")
+        ny, nx = m.intensity.shape
+        lines.append(f"acq      {ny}×{nx} px · {m.n_bins} bins · {res * 1000:.2f} ps/bin"
+                     f" · period {c.period_ns:.2f} ns · {c.n_photons:,} photons")
+        (alo, ahi), (blo, bhi) = self._get_gate("A"), self._get_gate("B")
+        a_ns = gating.gate_bounds_ns(alo, ahi, res)
+        if self.mode == "lifetime":
+            b_ns = gating.gate_bounds_ns(blo, bhi, res)
+            lines.append(f"gates    A {a_ns[0]:.2f}–{a_ns[1]:.2f} ns · "
+                         f"B {b_ns[0]:.2f}–{b_ns[1]:.2f} ns · "
+                         f"min counts {self.rld_min_counts:g}")
+        else:
+            g_ns = gating.gate_bounds_ns(self.gate_lo_bin, self.gate_hi_bin, res)
+            lines.append(f"gate     {g_ns[0]:.2f}–{g_ns[1]:.2f} ns")
+        lines.append(f"analysis mode {self.mode} · binning {m.bin_factor}×"
+                     f" · threshold {self.threshold:g}"
+                     f" · floor {'on' if self.apply_floor else 'off'}"
+                     f" · t0 {m.t0_ns():.2f} ns")
+        if self.phasor_cal:
+            pc = self.phasor_cal
+            lines.append(f"cal      harmonic {self.harmonic}: τref {pc['tau_ref_ns']:g} ns"
+                         f" · φ {pc['phi']:.4f} rad · mod {pc['mod']:.4f}")
+        picks = self._shown_picks()
+        if picks:
+            tags = ", ".join(f"{self._pick_tag(p)}" for p in picks[:4])
+            more = f" (+{len(picks) - 4} more)" if len(picks) > 4 else ""
+            lines.append(f"selected {tags}{more}")
+        meta = self._metadata()
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        lines.append(f"versions ChronoGate {meta['chronogate_version']}"
+                     f" · ptufile {meta['ptufile_version']}"
+                     f" · numpy {meta['numpy_version']}")
+        lines.append(f"written  {stamp}")
+        lines.append("repro    provenance JSON doubles as a loadable settings file")
+        return lines
+
+    def export_report(self, out_dir=None) -> dict:
+        """Write the one-page "everything" report for the current mode; returns
+        the path map. The primary panel follows the mode (τ histogram / phasor
+        cloud / gated-intensity histogram); the raw numbers behind every panel
+        ship alongside (decay CSV, primary CSV, raw TIFF, provenance JSON)."""
+        if self.model is None:
+            return {}
+        out_dir = Path(out_dir) if out_dir else self.model.cube.path.parent / "chronogate_exports"
+        m = self.model
+        res = m.resolution_ns
+        stem = m.cube.path.stem
+        base = f"{stem}_ch{self.channel}_{self.mode}"
+        union = self._union_pick_mask()
+
+        a_ns = gating.gate_bounds_ns(*self._get_gate("A"), res)
+        if self.mode == "lifetime":
+            b_ns = gating.gate_bounds_ns(*self._get_gate("B"), res)
+            gates = [(a_ns[0], a_ns[1], "gate A (early)"),
+                     (b_ns[0], b_ns[1], "gate B (late)")]
+            tau, _ = self._compute_lifetime_map()
+            finite = tau[np.isfinite(tau)]
+            vmin, vmax = self._clim_from(finite, 2, 98, floor_gap=1e-3)
+            image, cmap, image_label = tau, self.lifetime_cmap, "apparent lifetime (ns)"
+            primary = {"kind": "hist", "values": finite, "bins": 40,
+                       "range": (vmin, vmax), "xlabel": "τ (ns)",
+                       "selection": self._selection_tau(tau),
+                       "label": "apparent-lifetime distribution (RLD)"}
+        else:
+            g_ns = gating.gate_bounds_ns(self.gate_lo_bin, self.gate_hi_bin, res)
+            gates = [(g_ns[0], g_ns[1], "gate")]
+            image, vmin, vmax = self._current_image_for_export()
+            cmap, image_label = self.cmap, "photons in gate"
+            if self.mode == "phasor":
+                g, s = self._phasor_maps()
+                cal = "calibrated" if self.phasor_cal else "uncalibrated"
+                primary = {"kind": "phasor", "g": g, "s": s,
+                           "label": f"phasor — harmonic {self.harmonic}, {cal}"}
+            else:
+                finite = image[np.isfinite(image)]
+                sel = image[union] if union is not None else None
+                primary = {"kind": "hist", "values": finite, "bins": 40,
+                           "range": (vmin, vmax), "xlabel": "photons in gate",
+                           "selection": sel,
+                           "label": "gated-intensity distribution"}
+
+        paths = export_mod.export_report(
+            out_dir, base,
+            metadata={**self._metadata(), "source_sha256": self._source_sha256()},
+            settings=self._settings(),
+            title=f"{m.cube.path.name} — ChronoGate report ({self.mode})",
+            summary_lines=self._report_summary_lines(),
+            time_ns=m.cube.time_axis_ns, decay=m.decay, t0_ns=m.t0_ns(),
+            gates_ns=gates, primary=primary,
+            image=image, cmap=cmap, vmin=vmin, vmax=vmax, image_label=image_label,
+            select_mask=union, select_color=theme.SELECT)
+        self.statusMessage.emit(f"Report → {out_dir}")
+        return paths
+
+    def _on_export_report(self) -> None:
+        if self.model is None:
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self.w, "Choose a folder for the one-page report", self._dialog_dir(),
+            QFileDialog.Option.ShowDirsOnly | _DLG_OPT)
+        if directory:
+            self.export_report(directory)
+
     def _picks_for_current_model(self, recipes: list[tuple[dict, dict]]) -> list[dict]:
         """Rebuild picks from their recipes against the *current* model.
 

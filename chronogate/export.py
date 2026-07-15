@@ -301,6 +301,215 @@ def export_all(
     return paths
 
 
+def _build_report_figure(
+    *,
+    title: str,
+    summary_lines: list[str],
+    time_ns: np.ndarray,
+    decay: np.ndarray,
+    t0_ns: float | None,
+    gates_ns: list[tuple[float, float, str]],
+    primary: dict[str, Any],
+    image: np.ndarray,
+    cmap: str,
+    vmin: float,
+    vmax: float,
+    image_label: str,
+    select_mask: np.ndarray | None = None,
+    select_color: str = "#E91E63",
+):
+    """The one-page "everything" figure: a 2x2 gridspec on a landscape page.
+
+    Four roles (see export_one-page-result-figure.md): identity & provenance
+    (text, axis off), a convergence/quality diagnostic (the decay with gates and
+    t0 marked, cumulative photon fraction on a twin axis), the primary result
+    with its uncertainty visible, and the spatial field. Built on the Agg
+    canvas directly so it renders headless (a cluster with no display).
+    """
+    import matplotlib
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    fig = Figure(figsize=(11, 8.5), dpi=150)          # US-letter landscape
+    FigureCanvasAgg(fig)
+    g = fig.add_gridspec(2, 2)
+
+    # -- role 1: identity & provenance (top-left, text) ----------------------
+    ax_meta = fig.add_subplot(g[0, 0])
+    ax_meta.axis("off")
+    # The title lives in the suptitle; this panel is the summary only.
+    ax_meta.text(0, 1, "\n".join(summary_lines),
+                 va="top", ha="left", family="monospace", fontsize=8.5,
+                 transform=ax_meta.transAxes, wrap=True)
+
+    # -- role 2: quality diagnostic (top-right, decay + gates + t0) ----------
+    ax_conv = fig.add_subplot(g[0, 1])
+    ax_conv.plot(time_ns, decay, lw=1.2, color="#3949ab")
+    ax_conv.set_yscale("log")
+    ax_conv.set_xlabel("time (ns)")
+    ax_conv.set_ylabel("photons / bin (log)")
+    ax_conv.set_title("summed decay — the photon statistics behind the result",
+                      fontsize=9)
+    if t0_ns is not None:
+        ax_conv.axvline(t0_ns, ls="--", color="#888", lw=1)
+        ax_conv.annotate("t0", (t0_ns, ax_conv.get_ylim()[1]),
+                         fontsize=8, color="#888", ha="left", va="top")
+    for i, (lo, hi, label) in enumerate(gates_ns):
+        ax_conv.axvspan(lo, hi, alpha=0.15, lw=0,
+                        color=["#3949ab", "#e53935"][i % 2], label=label)
+    if gates_ns:
+        ax_conv.legend(fontsize=8, loc="center right", framealpha=0.9)
+    ax_twin = ax_conv.twinx()
+    total = float(np.sum(decay))
+    if total > 0:
+        ax_twin.plot(time_ns, np.cumsum(decay) / total, color="#c0392b", lw=1)
+    ax_twin.set_ylabel("cumulative photon fraction", color="#c0392b", fontsize=8)
+    ax_twin.set_ylim(0, 1.05)
+
+    # -- role 3: primary result, uncertainty visible (bottom-left) -----------
+    ax_main = fig.add_subplot(g[1, 0])
+    if primary["kind"] == "hist":
+        values = np.asarray(primary["values"], float)
+        values = values[np.isfinite(values)]
+        bins = int(primary.get("bins", 40))
+        rng = primary.get("range")
+        counts, edges = np.histogram(values, bins=bins, range=rng)
+        ax_main.bar(edges[:-1], counts, width=np.diff(edges), align="edge",
+                    color="#3949ab", alpha=0.8, lw=0)
+        sel = primary.get("selection")
+        if sel is not None:
+            sel = np.asarray(sel, float)
+            sel = sel[np.isfinite(sel)]
+            scounts, _ = np.histogram(sel, bins=edges)
+            ax_main.bar(edges[:-1], scounts, width=np.diff(edges), align="edge",
+                        color=select_color, alpha=0.85, lw=0, zorder=3,
+                        label="selection")
+            ax_main.legend(fontsize=8)
+        if values.size:                       # median + IQR: the uncertainty
+            q1, med, q3 = np.percentile(values, [25, 50, 75])
+            ax_main.axvspan(q1, q3, color="#3949ab", alpha=0.12, lw=0)
+            ax_main.axvline(med, color="#1a237e", lw=1.2, ls="-")
+            ax_main.annotate(f"median {med:.3g}  (IQR {q1:.3g}–{q3:.3g})",
+                             (0.02, 0.98), xycoords="axes fraction",
+                             fontsize=8, va="top")
+        ax_main.set_xlabel(primary.get("xlabel", ""))
+        ax_main.set_ylabel("pixels")
+    elif primary["kind"] == "phasor":
+        gg = np.asarray(primary["g"], float).ravel()
+        ss = np.asarray(primary["s"], float).ravel()
+        ok = np.isfinite(gg) & np.isfinite(ss)
+        ax_main.hexbin(gg[ok], ss[ok], gridsize=60, cmap="viridis",
+                       mincnt=1, lw=0.1)
+        th = np.linspace(0, np.pi, 200)       # universal semicircle
+        ax_main.plot(0.5 + 0.5 * np.cos(th), 0.5 * np.sin(th),
+                     color="#888", lw=1, ls="--")
+        ax_main.set_xlabel("g")
+        ax_main.set_ylabel("s")
+        ax_main.set_xlim(-0.05, 1.05)
+        ax_main.set_ylim(-0.02, 0.65)
+        ax_main.set_aspect("equal")
+    else:                                      # pragma: no cover - caller bug
+        raise ValueError(f"unknown primary kind: {primary['kind']!r}")
+    ax_main.set_title(primary.get("label", "primary result"), fontsize=9)
+
+    # -- role 4: spatial context (bottom-right, the field) -------------------
+    ax_map = fig.add_subplot(g[1, 1])
+    cmap_obj = matplotlib.colormaps[cmap].copy()
+    cmap_obj.set_bad(color="black")
+    im = ax_map.imshow(image, cmap=cmap_obj, vmin=vmin, vmax=vmax,
+                       interpolation="nearest")
+    if select_mask is not None and select_mask.any():
+        ax_map.contour(select_mask.astype(float), levels=[0.5],
+                       colors=[select_color], linewidths=1.0)
+    ax_map.set_xticks([])
+    ax_map.set_yticks([])
+    fig.colorbar(im, ax=ax_map, label=image_label, fraction=0.046, pad=0.04)
+
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    return fig
+
+
+def export_report(
+    out_dir: str | Path,
+    base: str,
+    *,
+    metadata: dict[str, Any],
+    settings: dict[str, Any],
+    **fig_kwargs: Any,
+) -> dict[str, str]:
+    """Write the one-page report and its raw-data siblings; returns role -> path.
+
+    The figure is a *view*, never the source of truth: the decay and the primary
+    plot each ship their exact numbers as CSV, the field ships as a raw TIFF,
+    and the provenance JSON (also a loadable settings file) records every file
+    written -- someone should be able to regenerate the page from the folder
+    alone. Both a raster (PNG, for sharing) and a vector (PDF, for print) are
+    emitted.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    fig = _build_report_figure(**fig_kwargs)
+    png_path = out_dir / f"{base}_report.png"
+    pdf_path = out_dir / f"{base}_report.pdf"
+    fig.savefig(str(png_path), dpi=150)
+    fig.savefig(str(pdf_path))
+
+    decay_path = out_dir / f"{base}_decay.csv"
+    _write_decay_csv(decay_path, fig_kwargs["time_ns"], fig_kwargs["decay"])
+
+    primary = fig_kwargs["primary"]
+    primary_path = out_dir / f"{base}_primary.csv"
+    with open(primary_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        if primary["kind"] == "hist":
+            values = np.asarray(primary["values"], float)
+            values = values[np.isfinite(values)]
+            counts, edges = np.histogram(values, bins=int(primary.get("bins", 40)),
+                                         range=primary.get("range"))
+            sel = primary.get("selection")
+            if sel is not None:
+                sel = np.asarray(sel, float)
+                scounts, _ = np.histogram(sel[np.isfinite(sel)], bins=edges)
+            else:
+                scounts = np.zeros_like(counts)
+            w.writerow(["bin_lo", "bin_hi", "count", "selection_count"])
+            for lo, hi, n, ns in zip(edges[:-1], edges[1:], counts, scounts):
+                w.writerow([f"{lo:.6g}", f"{hi:.6g}", int(n), int(ns)])
+        else:
+            gg = np.asarray(primary["g"], float).ravel()
+            ss = np.asarray(primary["s"], float).ravel()
+            w.writerow(["g", "s"])
+            for a, b in zip(gg, ss):
+                w.writerow([f"{a:.6g}", f"{b:.6g}"])
+
+    tiff_path = out_dir / f"{base}_gated_raw.tif"
+    raw_dtype = _write_raw_tiff(tiff_path, fig_kwargs["image"],
+                                {**metadata, "settings": settings})
+
+    paths = {
+        "report_png": str(png_path),
+        "report_pdf": str(pdf_path),
+        "decay_csv": str(decay_path),
+        "primary_csv": str(primary_path),
+        "raw_tiff": str(tiff_path),
+    }
+    provenance = {
+        "tool": "ChronoGate",
+        "report": "one-page result figure; the CSVs/TIFF are the source data "
+                  "behind each panel",
+        "metadata": metadata,
+        "settings": settings,
+        "raw_tiff_dtype": raw_dtype,
+        "files": {k: Path(v).name for k, v in paths.items()},
+    }
+    json_path = out_dir / f"{base}_provenance.json"
+    json_path.write_text(json.dumps(provenance, indent=2, default=str))
+    paths["provenance"] = str(json_path)
+    return paths
+
+
 def save_settings(path: str | Path, settings: dict[str, Any], metadata: dict[str, Any]) -> None:
     """Persist gate/threshold/etc. settings (plus metadata) to a JSON file."""
     Path(path).write_text(

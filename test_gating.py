@@ -472,6 +472,83 @@ def test_mask_stats_aggregates_selection():
     print("OK: mask_stats aggregates a selection (mean/median/std over finite values).")
 
 
+def test_one_page_report_export():
+    """The one-page 'everything' figure: 2x2 roles (identity/provenance text,
+    decay diagnostic with gates + t0, primary result with uncertainty, spatial
+    field), rendered headless to PNG + PDF, with every plotted curve's numbers
+    in sibling CSVs and the field as a raw TIFF -- the image is a view, not the
+    source of truth."""
+    import csv as csvmod
+    import json
+    import tempfile
+    from chronogate import export as ex
+
+    rng = np.random.default_rng(7)
+    H = 64
+    t = np.arange(H) * 0.1
+    decay = 1000.0 * np.exp(-t / 2.0) + 5.0
+    tau_vals = rng.normal(2.0, 0.2, 500)
+    img = rng.poisson(50, (32, 32)).astype(float)
+    mask = np.zeros((32, 32), bool)
+    mask[4:9, 4:9] = True
+
+    kwargs = dict(
+        title="synthetic run",
+        summary_lines=["median tau = 2.00 ns (IQR 1.86-2.13, n=500 px)",
+                       "sha256 deadbeefdeadbeef | chronogate vX.Y"],
+        time_ns=t, decay=decay, t0_ns=0.4,
+        gates_ns=[(0.5, 3.0, "gate A"), (3.1, 6.0, "gate B")],
+        primary={"kind": "hist", "values": tau_vals, "xlabel": "tau (ns)",
+                 "bins": 40, "range": (1.0, 3.0), "selection": tau_vals[:50],
+                 "label": "tau distribution"},
+        image=img, cmap="viridis", vmin=0.0, vmax=100.0,
+        image_label="photons in gate", select_mask=mask)
+
+    # Four roles on one page: a text panel (axis off), the decay diagnostic
+    # (plus its cumulative-fraction twin), the primary plot, the field + its
+    # colorbar.
+    fig = ex._build_report_figure(**kwargs)
+    assert len(fig.axes) >= 4
+    assert any(not a.axison for a in fig.axes), "identity panel has its axis off"
+
+    out = Path(tempfile.mkdtemp())
+    paths = ex.export_report(out, "syn", metadata={"source_file": "synthetic.ptu"},
+                             settings={"mode": "lifetime"}, **kwargs)
+    for role in ("report_png", "report_pdf", "decay_csv", "primary_csv",
+                 "raw_tiff", "provenance"):
+        p = Path(paths[role])
+        assert p.exists() and p.stat().st_size > 0, f"missing/empty: {role}"
+    assert paths["report_png"].endswith(".png") and paths["report_pdf"].endswith(".pdf")
+
+    # The primary CSV holds the exact histogram behind the money plot.
+    with open(paths["primary_csv"]) as fh:
+        rows = list(csvmod.reader(fh))
+    assert rows[0] == ["bin_lo", "bin_hi", "count", "selection_count"]
+    assert len(rows) == 1 + 40
+    want = np.histogram(tau_vals, bins=40, range=(1.0, 3.0))[0]
+    assert [int(r[2]) for r in rows[1:]] == want.tolist()
+    want_sel = np.histogram(tau_vals[:50], bins=40, range=(1.0, 3.0))[0]
+    assert [int(r[3]) for r in rows[1:]] == want_sel.tolist()
+
+    # Provenance records the settings (reloadable in-app) and every file written.
+    prov = json.loads(Path(paths["provenance"]).read_text())
+    assert prov["settings"]["mode"] == "lifetime"
+    assert set(prov["files"]) == {"report_png", "report_pdf", "decay_csv",
+                                  "primary_csv", "raw_tiff"}
+
+    # Phasor-mode primary: the scatter's numbers ship as (g, s) rows.
+    g = 0.5 + 0.02 * rng.standard_normal(200)
+    s = 0.4 + 0.02 * rng.standard_normal(200)
+    kwargs2 = {**kwargs,
+               "primary": {"kind": "phasor", "g": g, "s": s,
+                           "label": "phasor (harmonic 1)"}}
+    paths2 = ex.export_report(out, "syn_ph", metadata={}, settings={}, **kwargs2)
+    with open(paths2["primary_csv"]) as fh:
+        rows = list(csvmod.reader(fh))
+    assert rows[0] == ["g", "s"] and len(rows) == 1 + 200
+    print("OK: one-page report (PNG+PDF, 4 roles) with sibling CSVs + raw TIFF.")
+
+
 if __name__ == "__main__":
     try:
         test_prefix_sum_matches_direct_sum()
@@ -487,6 +564,7 @@ if __name__ == "__main__":
         test_phasor_calibration_recovers_true_position()
         test_phasor_second_harmonic()
         test_mask_stats_aggregates_selection()
+        test_one_page_report_export()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

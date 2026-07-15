@@ -205,6 +205,8 @@ class MainWindow(QMainWindow):
         self.act_export = QAction("&Export…", self, shortcut=QKeySequence("Ctrl+E"))
         self.act_batch = QAction("Export &all planes (batch)…", self,
                                  shortcut=QKeySequence("Ctrl+Shift+E"))
+        self.act_report = QAction("Export &report (one-pager)…", self,
+                                  shortcut=QKeySequence("Ctrl+R"))
         self.act_save = QAction("&Save settings", self, shortcut=QKeySequence("Ctrl+S"))
         self.act_load = QAction("&Load settings", self, shortcut=QKeySequence("Ctrl+L"))
         self.act_quit = QAction("&Quit", self, shortcut=QKeySequence.Quit)
@@ -262,6 +264,7 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_open_folder)
         m_file.addAction(self.act_export)
         m_file.addAction(self.act_batch)
+        m_file.addAction(self.act_report)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
         m_file.addAction(self.act_load)
@@ -308,6 +311,11 @@ class MainWindow(QMainWindow):
         self.act_open_folder.triggered.connect(self.filep.btn_open_folder.click)
         self.act_export.triggered.connect(self.filep.btn_export.click)
         self.act_batch.triggered.connect(self.controller._on_batch_export)
+        self.act_report.triggered.connect(self.controller._on_export_report)
+        self.act_report.setToolTip(
+            "One-page result figure (PNG + PDF): headline number with uncertainty, "
+            "decay diagnostic, primary plot, field — with the raw numbers as CSVs "
+            "and a content-hashed provenance JSON alongside")
         self.act_phasor_cal.triggered.connect(self.controller._on_phasor_calibrate)
         self.act_phasor_cal_clear.triggered.connect(self.controller.clear_phasor_calibration)
         self.act_harmonic2.toggled.connect(self.controller._on_harmonic2)
@@ -394,7 +402,8 @@ class MainWindow(QMainWindow):
         actions are disabled -- only the Open actions stay live.
         """
         self._stack.setCurrentWidget(self._workspace if loaded else self._welcome)
-        for a in (self.act_export, self.act_batch, self.act_save, self.act_load,
+        for a in (self.act_export, self.act_batch, self.act_report,
+                  self.act_save, self.act_load,
                   self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log,
                   self.act_floor, self.act_pixels, self.act_phasor_cal,
                   self.act_phasor_cal_clear, self.act_harmonic2, self.act_undo_pick):

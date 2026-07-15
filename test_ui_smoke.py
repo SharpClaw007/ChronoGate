@@ -1431,6 +1431,65 @@ def test_prefs_reopen_last_and_dialog() -> None:
     print("OK: reopen-last preference (record, resolve, dialog, stale path).")
 
 
+def test_one_page_report_ui() -> None:
+    """File ▸ Export report… writes the four-role one-pager for the current
+    mode (τ histogram / phasor cloud / intensity histogram as the primary),
+    with a sha256 content hash of the source .ptu in the provenance and the
+    headline number (uncertainty visible) leading the summary panel."""
+    import hashlib
+    w = _window()
+    c = w.controller
+    assert w.act_report.isEnabled(), "report is inert only before a load"
+
+    # Lifetime mode with a selection: τ-histogram primary, headline + hash.
+    w.act_lifetime.trigger()
+    w.binning.bin.setValue(8)
+    c._on_pixel_rows([(10, 20), (11, 21), (12, 22)])
+    lines = c._report_summary_lines()
+    assert any("median τ" in l for l in lines[:2]), "headline (with IQR) leads"
+    assert any("sha256" in l for l in lines), "content hash on the page itself"
+    out = Path(tempfile.mkdtemp())
+    paths = c.export_report(out)
+    for role in ("report_png", "report_pdf", "decay_csv", "primary_csv",
+                 "raw_tiff", "provenance"):
+        assert Path(paths[role]).exists(), f"missing {role}"
+    prov = json.loads(Path(paths["provenance"]).read_text())
+    h = hashlib.sha256(c.model.cube.path.read_bytes()).hexdigest()
+    assert prov["metadata"]["source_sha256"] == h, "hash, not just a name"
+    assert prov["settings"]["mode"] == "lifetime"
+    with open(paths["primary_csv"]) as fh:
+        assert fh.readline().strip() == "bin_lo,bin_hi,count,selection_count"
+
+    # Phasor mode: the primary CSV becomes the (g, s) cloud.
+    w.act_phasor.trigger()
+    paths2 = c.export_report(out)
+    with open(paths2["primary_csv"]) as fh:
+        assert fh.readline().strip() == "g,s"
+    assert paths2["report_png"] != paths["report_png"], "mode-stamped basenames"
+
+    # Intensity mode works too, and the menu action routes via a folder picker.
+    w.act_intensity.trigger()
+    paths3 = c.export_report(out)
+    assert Path(paths3["report_png"]).exists()
+
+    import chronogate.ui.controller as ctrl_mod
+    seen = {}
+    c.export_report = lambda out_dir=None: seen.update(d=out_dir) or {}
+    real = ctrl_mod.QFileDialog
+    class _FakeDialog:
+        Option = real.Option
+        @staticmethod
+        def getExistingDirectory(*a, **k):
+            return "/tmp/report_out"
+    ctrl_mod.QFileDialog = _FakeDialog
+    try:
+        c._on_export_report()
+    finally:
+        ctrl_mod.QFileDialog = real
+    assert seen["d"] == "/tmp/report_out"
+    print("OK: one-page report from all three modes; hash + headline verified.")
+
+
 def test_no_qt_virtual_shadowing() -> None:
     """No widget attribute may shadow a Qt virtual method.
 
@@ -1533,6 +1592,7 @@ if __name__ == "__main__":
         test_export_dialog_defaults_and_mapping()
         test_export_dialog_drives_export()
         test_prefs_reopen_last_and_dialog()
+        test_one_page_report_ui()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)
