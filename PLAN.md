@@ -1,7 +1,7 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.15.0, working tree clean,
-52 tests green (14 in `test_gating.py`, 38 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.16.0, working tree clean,
+54 tests green (15 in `test_gating.py`, 39 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -19,7 +19,29 @@ every change ships with a test and a green run of both suites.
 
 ## Where we left off
 
-Nothing is in progress. v0.15 added a **configurable export root**
+Nothing is in progress. v0.16 added **Export & open in Fiji** (ImageJ). A
+third export-dialog button (`ActionRole`, not `AcceptRole` — else the box
+emits `accepted` before the clicked-slot sets the flag) runs the normal
+export, forces the raw TIFF on (Fiji opens the raster), writes an ImageJ
+open-macro (`open_in_fiji.ijm`) beside the files, and launches Fiji on it via
+`QProcess.startDetached` (indirected through `controller._spawn_fiji` for
+testing). Fiji path is a new preference (`prefs.fiji_path`; Preferences ▸
+"Fiji app", `.app` bundles resolved to their inner launcher in
+`export._resolve_fiji_exe`); the button is disabled until it is set. The macro
+(pure, Qt-free, in `export.py`: `fiji_open_macro` / `fiji_command` /
+`imagej_lut_name`) opens the raster, `setMinAndMax` to ChronoGate's vmin/vmax,
+restores the selection label-map as an ROI **only when a mask TIFF was
+exported** (so ticking "Selection files" also gives you the ROI), and applies
+the LUT **last** so a viewer missing a bundled `mpl-*` LUT still gets the
+image/range/ROI. cmap→LUT: viridis→`mpl-viridis` (Fiji-bundled), turbo→
+`Spectrum` (built-in; no stock mpl-turbo), unknown→`Grays`. `export()` stashes
+`_last_render` (raster path, vmin/vmax, cmap, mask path) so the hand-off never
+recomputes the map. Fidelity is best-effort: no Fiji is installed on the dev
+machine, so the launch path is unit-tested by stubbing `_spawn_fiji`, never
+run end to end — **verify against a real Fiji before trusting the LUT names
+and the `-macro` flag** (see landmine).
+
+v0.15 added a **configurable export root**
 (Preferences ▸ "Export folder", `prefs.export_root`, empty = next to the
 opened data): every default destination — export dialog's run-stamped
 suggestion, Ctrl+R report, `batch` subfolder — routes through
@@ -190,6 +212,17 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
 - **BSD `sed` has no `\b`.** A `sed -i '' 's/\bfoo\b/bar/g'` silently does nothing.
 - **macOS:** run native arm64, never Rosetta; `QFileDialog` must use
   `DontUseNativeDialog`; join the decode `QThread` on close or you get a SIGABRT.
+- **The Fiji hand-off is unverified against a real Fiji.** No Fiji on the dev
+  machine, so `_spawn_fiji` is stubbed in tests and the macro/command are only
+  string-asserted. Before trusting it: the `-macro` flag and single-instance
+  forwarding are ImageJ1 conventions that hold in current Fiji but were not run
+  here; `mpl-viridis`/`mpl-plasma`/… require Fiji's bundled LUTs (a bare ImageJ
+  lacks them — that is why the LUT line is emitted *last*); and `.app` launcher
+  resolution assumes an `ImageJ*`/`Fiji*`-named executable in `Contents/MacOS`.
+- **A `QDialogButtonBox` button with `AcceptRole` emits `accepted` before your
+  own `clicked` slot runs.** The Fiji button therefore uses `ActionRole` and
+  calls `self.accept()` itself after setting `_open_fiji`, or the flag would be
+  read stale (plain Export vs Fiji indistinguishable).
 - **A reused export folder makes the dialog look broken.** Exporting a
   *subset* of artefacts into a folder still holding an earlier full export is
   indistinguishable from "it ignored my checkboxes" (identical basenames, no

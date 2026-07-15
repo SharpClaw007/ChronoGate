@@ -1600,6 +1600,65 @@ def test_restrict_export_to_selection() -> None:
     print("OK: restrict-to-selection masks raster/decay/report and says so.")
 
 
+def test_export_and_open_in_fiji() -> None:
+    """The 'Export & open in Fiji' button: disabled until a Fiji path is set;
+    when clicked it runs the export, writes an ImageJ open-macro next to the
+    files, and launches Fiji on it with the ChronoGate range + LUT + ROI. The
+    raw raster is forced on even if its checkbox was cleared."""
+    from PySide6.QtWidgets import QDialog
+    from chronogate.ui import prefs, export_dialog as ed
+
+    ini = str(Path(tempfile.mkdtemp()) / "prefs.ini")
+    saved = os.environ["CHRONOGATE_PREFS_INI"]
+    os.environ["CHRONOGATE_PREFS_INI"] = ini
+    try:
+        w = _window()
+        c = w.controller
+        c._on_pixel_rows([(10, 20), (11, 21), (12, 22)])   # a selection -> mask + ROI
+
+        # No Fiji configured: the button is present but disabled.
+        d0 = ed.ExportDialog(w, has_selection=True, sel_rows=3, sel_bytes=99,
+                             n_planes=1, default_dir="/o", fiji_configured=False)
+        assert d0.btn_fiji is not None and not d0.btn_fiji.isEnabled()
+
+        # Configure Fiji; a fake launcher captures the argv instead of spawning.
+        fake_fiji = Path(tempfile.mkdtemp()) / "fiji"
+        fake_fiji.write_text("#!/bin/sh\n"); fake_fiji.chmod(0o755)
+        prefs.set_fiji_path(str(fake_fiji))
+        launched = {}
+        c._spawn_fiji = lambda cmd: (launched.update(cmd=cmd), True)[1]
+
+        out = Path(tempfile.mkdtemp())
+        orig = ed.ExportDialog.exec
+        def fake_exec(self):
+            self.dir_edit.setText(str(out))
+            self.chk_raw.setChecked(False)      # deliberately off: must be forced on
+            self._on_fiji_clicked()             # the Fiji button (sets flag + accept)
+            return QDialog.Accepted
+        ed.ExportDialog.exec = fake_exec
+        try:
+            c._on_export()
+        finally:
+            ed.ExportDialog.exec = orig
+
+        # Raw raster written despite the unchecked box; macro written beside it.
+        assert list(out.glob("*_gated_raw.tif")), "raw raster forced on for Fiji"
+        macro = out / "open_in_fiji.ijm"
+        assert macro.exists()
+        text = macro.read_text()
+        assert "open(" in text and "setMinAndMax(" in text
+        assert 'run("Restore Selection");' in text, "selection travels as an ROI"
+        assert text.rstrip().endswith('");'), "a run(LUT) call closes the macro"
+
+        # Fiji was launched on that macro, through the configured launcher.
+        cmd = launched["cmd"]
+        assert cmd[0] == str(fake_fiji) and cmd[1] == "-macro"
+        assert cmd[2] == str(macro)
+    finally:
+        os.environ["CHRONOGATE_PREFS_INI"] = saved
+    print("OK: Export & open in Fiji — export, write macro, launch (forced raw).")
+
+
 def test_no_qt_virtual_shadowing() -> None:
     """No widget attribute may shadow a Qt virtual method.
 
@@ -1704,6 +1763,7 @@ if __name__ == "__main__":
         test_prefs_reopen_last_and_dialog()
         test_one_page_report_ui()
         test_restrict_export_to_selection()
+        test_export_and_open_in_fiji()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

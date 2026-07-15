@@ -2645,6 +2645,14 @@ class ViewerController(QObject):
                                cmap=self.cmap, vmin=vmin, vmax=vmax, metadata=self._metadata(),
                                settings=self._settings(), selection=selection,
                                options=options)
+        # Stash what the raw raster looks like, so an "open in Fiji" right after
+        # can rebuild the display range / LUT / ROI without recomputing the map.
+        self._last_render = {
+            "raw_tiff": paths.get("raw_tiff"),
+            "selection_mask": paths.get("selection_mask"),
+            "vmin": float(vmin), "vmax": float(vmax),
+            "cmap": self.lifetime_cmap if self.mode == "lifetime" else self.cmap,
+        }
         return paths
 
     # ------------------------------------------------------- one-page report
@@ -2949,10 +2957,16 @@ class ViewerController(QObject):
             sel_rows=rows, sel_bytes=nbytes, warn_rows=_PIXEL_TABLE_WARN_ROWS,
             n_planes=len(self.stack),
             default_dir=str(self._export_root() / f"run-{stamp}"),
-            batch=batch)
+            batch=batch, fiji_configured=bool(prefs.fiji_path()))
         if dlg.exec() != QDialog.Accepted:
             return
         options = dlg.options()
+        open_fiji = dlg.open_fiji()
+        if open_fiji and not options.raw_tiff:
+            # Fiji opens the raw raster; guarantee it exists regardless of the
+            # checkbox (there is otherwise nothing to hand over).
+            import dataclasses
+            options = dataclasses.replace(options, raw_tiff=True)
         if dlg.batch():
             self.batch_export(dlg.out_dir(), options=options)
             return
@@ -2966,6 +2980,38 @@ class ViewerController(QObject):
         msg = f"Exported → {out_dir}  ({', '.join(Path(p).name for p in paths.values())})"
         print(msg)
         self.statusMessage.emit(msg)
+        if open_fiji:
+            self._open_in_fiji(out_dir)
+
+    def _spawn_fiji(self, cmd: list[str]) -> bool:
+        """Launch Fiji detached (fire and forget), so it lives past ChronoGate
+        and its slow JVM start never blocks the UI. Split out for testing."""
+        from PySide6.QtCore import QProcess
+        return QProcess.startDetached(cmd[0], cmd[1:])
+
+    def _open_in_fiji(self, out_dir) -> None:
+        """Write an ImageJ open-macro for the just-exported raw raster and hand
+        it to Fiji (path from Preferences). Rebuilds ChronoGate's display range,
+        LUT and, when a selection mask was exported, its ROI."""
+        exe = prefs.fiji_path()
+        render = getattr(self, "_last_render", None)
+        if not exe or not render or not render.get("raw_tiff"):
+            self.statusMessage.emit("Nothing to open in Fiji (no raster, or Fiji "
+                                    "path not set in Preferences).")
+            return
+        macro = export_mod.fiji_open_macro(
+            render["raw_tiff"], render["vmin"], render["vmax"],
+            export_mod.imagej_lut_name(render["cmap"]),
+            mask_tiff=render.get("selection_mask"),
+            title=Path(render["raw_tiff"]).stem)
+        macro_path = Path(out_dir) / "open_in_fiji.ijm"
+        macro_path.write_text(macro)
+        cmd = export_mod.fiji_command(exe, macro_path)
+        if self._spawn_fiji(cmd):
+            self.statusMessage.emit(f"Opening in Fiji → {Path(render['raw_tiff']).name}")
+        else:
+            self.statusMessage.emit(f"Could not launch Fiji ({exe}). Check the "
+                                    f"path in Preferences.")
 
     def _on_save(self) -> None:
         if self.model is None:

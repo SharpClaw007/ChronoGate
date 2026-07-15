@@ -37,9 +37,11 @@ class ExportDialog(QDialog):
     def __init__(self, parent=None, *, raster_label: str = "gated intensity",
                  has_selection: bool = False, sel_rows: int = 0, sel_bytes: int = 0,
                  warn_rows: int = PIXEL_TABLE_WARN_ROWS, n_planes: int = 1,
-                 default_dir: str = "", batch: bool = False) -> None:
+                 default_dir: str = "", batch: bool = False,
+                 fiji_configured: bool = False) -> None:
         super().__init__(parent)
         self.setWindowTitle("Export")
+        self._open_fiji = False
 
         what = QGroupBox("What to export")
         self.chk_raw = QCheckBox(f"Raster TIFF — raw {raster_label} values (for ImageJ)")
@@ -113,6 +115,20 @@ class ExportDialog(QDialog):
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         self.buttons.button(QDialogButtonBox.Ok).setText("Export")
+        # A first-class second verb: run the same export, then open the raw
+        # raster in Fiji. Disabled (with a why) until a Fiji path is set in
+        # Preferences and a folder is chosen.
+        # ActionRole (not AcceptRole): the box would emit `accepted` before our
+        # own clicked-slot could set the flag, so accept() would read it stale.
+        # Our slot sets the flag first, then calls accept() itself.
+        self._fiji_configured = fiji_configured
+        self.btn_fiji = self.buttons.addButton("Export && open in Fiji",
+                                               QDialogButtonBox.ActionRole)
+        self.btn_fiji.setToolTip(
+            "Export, then open the raw-value raster in Fiji with the ChronoGate "
+            "display range, LUT and selection ROI." if fiji_configured else
+            "Set the Fiji application in Preferences to enable this.")
+        self.btn_fiji.clicked.connect(self._on_fiji_clicked)
         self.dir_edit.textChanged.connect(self._sync_ok_enabled)
         self._sync_ok_enabled()
 
@@ -137,7 +153,17 @@ class ExportDialog(QDialog):
             self.chk_pixels.setChecked(False)
 
     def _sync_ok_enabled(self) -> None:
-        self.buttons.button(QDialogButtonBox.Ok).setEnabled(bool(self.dir_edit.text().strip()))
+        has_dir = bool(self.dir_edit.text().strip())
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(has_dir)
+        self.btn_fiji.setEnabled(has_dir and self._fiji_configured)
+
+    def _on_fiji_clicked(self) -> None:
+        self._open_fiji = True
+        self.accept()
+
+    def open_fiji(self) -> bool:
+        """True when the user chose Export & open in Fiji (else plain Export)."""
+        return self._open_fiji
 
     def _browse(self) -> None:
         d = QFileDialog.getExistingDirectory(

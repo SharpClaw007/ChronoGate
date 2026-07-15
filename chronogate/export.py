@@ -522,6 +522,86 @@ def export_report(
     return paths
 
 
+# ChronoGate colormap name -> the nearest ImageJ Lookup Table. The perceptual
+# matplotlib maps ride in through Fiji's bundled "mpl-*" LUTs; turbo has no stock
+# mpl LUT, so it degrades to the built-in rainbow "Spectrum"; anything unknown
+# to "Grays" (always present). The caller applies this LAST in the macro, so a
+# viewer missing an mpl-* LUT still gets the image, range and ROI.
+_IMAGEJ_LUTS = {
+    "viridis": "mpl-viridis", "plasma": "mpl-plasma", "inferno": "mpl-inferno",
+    "magma": "mpl-magma", "cividis": "mpl-cividis",
+    "turbo": "Spectrum", "jet": "Spectrum", "rainbow": "Spectrum",
+    "gray": "Grays", "grays": "Grays", "greys": "Grays", "gist_gray": "Grays",
+    "hot": "Fire", "afmhot": "Fire",
+}
+
+
+def imagej_lut_name(cmap: str) -> str:
+    """Map a matplotlib colormap name to an ImageJ LUT (fallback: Grays)."""
+    return _IMAGEJ_LUTS.get(str(cmap).lower(), "Grays")
+
+
+def _ijm_str(path: str | Path) -> str:
+    """A path as an ImageJ-macro string literal (forward slashes, quotes safe)."""
+    return str(path).replace("\\", "/").replace('"', '\\"')
+
+
+def fiji_open_macro(raw_tiff: str | Path, vmin: float, vmax: float, lut: str,
+                    mask_tiff: str | Path | None = None,
+                    title: str | None = None) -> str:
+    """An ImageJ macro that opens the raw-value raster and rebuilds the view.
+
+    Order matters: open the raster, set ChronoGate's display range, restore the
+    selection as an ROI (only when a mask TIFF was exported), and apply the LUT
+    **last** -- if the viewer lacks a bundled ``mpl-*`` LUT that final line is
+    the only thing that fails, leaving the image, its range and its ROI intact.
+    """
+    lines = ["// ChronoGate -> Fiji: open the raw raster and reconstruct the view",
+             f'open("{_ijm_str(raw_tiff)}");']
+    if title:
+        lines.append(f'rename("{_ijm_str(title)}");')
+    lines.append(f"setMinAndMax({vmin:.6g}, {vmax:.6g});")
+    if mask_tiff is not None:
+        # The label map is 0 = unselected, k = k-th selection. Threshold any
+        # positive label into a composite selection, carry it to the raster,
+        # then drop the mask window (which leaves the raster active).
+        lines += [
+            f'open("{_ijm_str(mask_tiff)}");',
+            "setThreshold(0.5, 1e30);",
+            'run("Create Selection");',
+            "close();",
+            'run("Restore Selection");',
+        ]
+    lines.append(f'run("{lut}");')
+    return "\n".join(lines) + "\n"
+
+
+def _resolve_fiji_exe(fiji_path: str | Path) -> str:
+    """A macOS ``.app`` bundle -> its inner launcher; anything else unchanged.
+
+    A user browsing for Fiji naturally picks ``/Applications/Fiji.app`` (the
+    bundle), which cannot be exec'd directly; the real launcher lives in
+    ``Contents/MacOS`` (e.g. ``ImageJ-macosx``).
+    """
+    p = Path(fiji_path)
+    if str(p).endswith(".app"):
+        macos = p / "Contents" / "MacOS"
+        if macos.is_dir():
+            cands = sorted(x for x in macos.iterdir() if x.is_file())
+            # Prefer an ImageJ/Fiji-named launcher, else the first executable.
+            named = [c for c in cands if "imagej" in c.name.lower()
+                     or "fiji" in c.name.lower()]
+            chosen = (named or cands)
+            if chosen:
+                return str(chosen[0])
+    return str(p)
+
+
+def fiji_command(fiji_path: str | Path, macro_path: str | Path) -> list[str]:
+    """The argv to launch Fiji running an open-macro (GUI stays up for viewing)."""
+    return [_resolve_fiji_exe(fiji_path), "-macro", str(macro_path)]
+
+
 def save_settings(path: str | Path, settings: dict[str, Any], metadata: dict[str, Any]) -> None:
     """Persist gate/threshold/etc. settings (plus metadata) to a JSON file."""
     Path(path).write_text(

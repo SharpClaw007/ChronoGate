@@ -549,6 +549,51 @@ def test_one_page_report_export():
     print("OK: one-page report (PNG+PDF, 4 roles) with sibling CSVs + raw TIFF.")
 
 
+def test_fiji_macro_and_command():
+    """The Fiji hand-off builders (pure, Qt-free): an ImageJ macro that opens
+    the raw-value raster, sets ChronoGate's display range, restores the
+    selection as an ROI (only when a mask was exported), and applies the LUT
+    LAST so a missing mpl-* LUT cannot abort the range/ROI steps; plus a
+    command that resolves a macOS .app bundle to its inner launcher."""
+    import tempfile
+    from chronogate import export as ex
+
+    # cmap -> ImageJ LUT: matplotlib names map to Fiji's bundled mpl-*; turbo
+    # has no stock mpl LUT so it falls to the built-in Spectrum; unknown -> Grays.
+    assert ex.imagej_lut_name("viridis") == "mpl-viridis"
+    assert ex.imagej_lut_name("turbo") == "Spectrum"
+    assert ex.imagej_lut_name("nonsuch") == "Grays"
+
+    m = ex.fiji_open_macro("/x/tau.tif", 1.2, 2.8, "mpl-viridis",
+                           mask_tiff="/x/mask.tif", title="tau")
+    assert 'open("/x/tau.tif");' in m
+    assert "setMinAndMax(1.2, 2.8);" in m
+    assert 'open("/x/mask.tif");' in m and 'run("Create Selection");' in m
+    assert 'run("Restore Selection");' in m
+    # LUT is the final run() call.
+    assert m.rstrip().endswith('run("mpl-viridis");')
+    assert m.index('setMinAndMax') < m.index('run("mpl-viridis")')
+    assert m.index('Restore Selection') < m.index('run("mpl-viridis")')
+
+    # No mask -> no ROI lines at all (raw-TIFF-only export).
+    m2 = ex.fiji_open_macro("/x/tau.tif", 0.0, 1.0, "Grays")
+    assert "Create Selection" not in m2 and "Restore Selection" not in m2
+
+    # Command: a plain executable passes through; a .app bundle resolves to the
+    # launcher inside Contents/MacOS.
+    cmd = ex.fiji_command("/usr/local/bin/fiji", "/tmp/open.ijm")
+    assert cmd == ["/usr/local/bin/fiji", "-macro", "/tmp/open.ijm"]
+
+    app = Path(tempfile.mkdtemp()) / "Fiji.app"
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    launcher = app / "Contents" / "MacOS" / "ImageJ-macosx"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    cmd2 = ex.fiji_command(str(app), "/tmp/open.ijm")
+    assert cmd2[0] == str(launcher), cmd2
+    print("OK: Fiji macro (open+range+ROI+LUT-last) and .app-resolving command.")
+
+
 if __name__ == "__main__":
     try:
         test_prefix_sum_matches_direct_sum()
@@ -565,6 +610,7 @@ if __name__ == "__main__":
         test_phasor_second_harmonic()
         test_mask_stats_aggregates_selection()
         test_one_page_report_export()
+        test_fiji_macro_and_command()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

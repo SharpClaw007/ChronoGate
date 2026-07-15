@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 _KEY_REOPEN = "startup/reopen_last"
 _KEY_LAST_PATH = "startup/last_path"
 _KEY_EXPORT_ROOT = "export/root"
+_KEY_FIJI_PATH = "integrations/fiji_path"
 
 
 def _qsettings() -> QSettings:
@@ -69,6 +70,17 @@ def set_export_root(path: str) -> None:
     s.sync()
 
 
+def fiji_path() -> str:
+    """The Fiji launcher/app to hand exports to ('' = not configured)."""
+    return _qsettings().value(_KEY_FIJI_PATH, "", type=str)
+
+
+def set_fiji_path(path: str) -> None:
+    s = _qsettings()
+    s.setValue(_KEY_FIJI_PATH, str(path))
+    s.sync()
+
+
 class PreferencesDialog(QDialog):
     """The Preferences window. Reads the stored values on open; writes them
     only on OK (Cancel changes nothing)."""
@@ -101,6 +113,19 @@ class PreferencesDialog(QDialog):
         export_row.addWidget(self.export_dir, 1)
         export_row.addWidget(btn_browse)
 
+        self.fiji_edit = QLineEdit(fiji_path())
+        self.fiji_edit.setPlaceholderText("(not set — the Fiji button stays disabled)")
+        self.fiji_edit.setToolTip(
+            "The Fiji application or launcher. On macOS pick Fiji.app; ChronoGate "
+            "resolves the launcher inside it. Enables 'Export & open in Fiji' in "
+            "the export dialog.")
+        btn_fiji = QPushButton("Browse…")
+        btn_fiji.clicked.connect(self._browse_fiji)
+        fiji_row = QHBoxLayout()
+        fiji_row.addWidget(QLabel("Fiji app"))
+        fiji_row.addWidget(self.fiji_edit, 1)
+        fiji_row.addWidget(btn_fiji)
+
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -109,6 +134,7 @@ class PreferencesDialog(QDialog):
         lay.addWidget(self.chk_reopen)
         lay.addWidget(note)
         lay.addLayout(export_row)
+        lay.addLayout(fiji_row)
         lay.addWidget(self.buttons)
 
     def _browse_export_dir(self) -> None:
@@ -118,7 +144,20 @@ class PreferencesDialog(QDialog):
         if d:
             self.export_dir.setText(d)
 
+    def _browse_fiji(self) -> None:
+        # A macOS .app is a directory; a Linux/Windows launcher is a file. Offer
+        # a file picker (it can still descend into a bundle), and default the
+        # start location to /Applications where Fiji.app usually lives.
+        start = self.fiji_edit.text() or "/Applications"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose the Fiji application or launcher", start,
+            "Applications (*.app);;All files (*)", "",
+            QFileDialog.Option.DontUseNativeDialog)
+        if path:
+            self.fiji_edit.setText(path)
+
     def accept(self) -> None:
         set_reopen_last(self.chk_reopen.isChecked())
         set_export_root(self.export_dir.text().strip())
+        set_fiji_path(self.fiji_edit.text().strip())
         super().accept()
