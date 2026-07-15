@@ -577,18 +577,29 @@ def fiji_open_macro(raw_tiff: str | Path, vmin: float, vmax: float, lut: str,
 
 
 def _resolve_fiji_exe(fiji_path: str | Path) -> str:
-    """A macOS ``.app`` bundle -> its inner launcher; anything else unchanged.
+    """Resolve whatever the user pointed at to an actual launcher executable.
 
-    A user browsing for Fiji naturally picks ``/Applications/Fiji.app`` (the
-    bundle), which cannot be exec'd directly; the real launcher lives in
-    ``Contents/MacOS`` (e.g. ``ImageJ-macosx``).
+    Three shapes seen in the wild:
+
+    * the launcher **file** itself (``/Applications/Fiji/fiji``) -> unchanged;
+    * the new Fiji "App Suite" **directory** (``/Applications/Fiji``, how brew
+      installs it) -> its top-level ``fiji`` shell script, which dispatches to
+      the right OS/arch binary itself;
+    * a classic macOS ``.app`` **bundle** -> the launcher in ``Contents/MacOS``.
     """
     p = Path(fiji_path)
-    if str(p).endswith(".app"):
+    if p.is_file():
+        return str(p)
+    if p.is_dir():
+        # New App Suite: a top-level `fiji` (or `ImageJ`) launcher script.
+        for name in ("fiji", "fiji.sh", "ImageJ", "imagej"):
+            cand = p / name
+            if cand.is_file():
+                return str(cand)
+        # Classic .app bundle (or any dir with a Contents/MacOS launcher).
         macos = p / "Contents" / "MacOS"
         if macos.is_dir():
             cands = sorted(x for x in macos.iterdir() if x.is_file())
-            # Prefer an ImageJ/Fiji-named launcher, else the first executable.
             named = [c for c in cands if "imagej" in c.name.lower()
                      or "fiji" in c.name.lower()]
             chosen = (named or cands)

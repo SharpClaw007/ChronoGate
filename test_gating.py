@@ -591,7 +591,18 @@ def test_fiji_macro_and_command():
     launcher.chmod(0o755)
     cmd2 = ex.fiji_command(str(app), "/tmp/open.ijm")
     assert cmd2[0] == str(launcher), cmd2
-    print("OK: Fiji macro (open+range+ROI+LUT-last) and .app-resolving command.")
+
+    # New Fiji "App Suite" (brew): /Applications/Fiji is a plain directory whose
+    # top-level `fiji` shell script is the arch-dispatching launcher. Pointed at
+    # the directory, resolve to that script; pointed at the script, keep it.
+    suite = Path(tempfile.mkdtemp()) / "Fiji"
+    suite.mkdir()
+    fiji_sh = suite / "fiji"
+    fiji_sh.write_text("#!/bin/sh\n"); fiji_sh.chmod(0o755)
+    (suite / "Fiji.app" / "Contents" / "MacOS").mkdir(parents=True)  # a decoy bundle
+    assert ex.fiji_command(str(suite), "/tmp/o.ijm")[0] == str(fiji_sh)
+    assert ex.fiji_command(str(fiji_sh), "/tmp/o.ijm")[0] == str(fiji_sh)
+    print("OK: Fiji macro (open+range+ROI+LUT-last) and launcher resolution.")
 
 
 if __name__ == "__main__":

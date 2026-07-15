@@ -1,6 +1,6 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.16.0, working tree clean,
+**State at the end of the last session: v0.16.1, working tree clean,
 54 tests green (15 in `test_gating.py`, 39 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
@@ -212,13 +212,18 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
 - **BSD `sed` has no `\b`.** A `sed -i '' 's/\bfoo\b/bar/g'` silently does nothing.
 - **macOS:** run native arm64, never Rosetta; `QFileDialog` must use
   `DontUseNativeDialog`; join the decode `QThread` on close or you get a SIGABRT.
-- **The Fiji hand-off is unverified against a real Fiji.** No Fiji on the dev
-  machine, so `_spawn_fiji` is stubbed in tests and the macro/command are only
-  string-asserted. Before trusting it: the `-macro` flag and single-instance
-  forwarding are ImageJ1 conventions that hold in current Fiji but were not run
-  here; `mpl-viridis`/`mpl-plasma`/… require Fiji's bundled LUTs (a bare ImageJ
-  lacks them — that is why the LUT line is emitted *last*); and `.app` launcher
-  resolution assumes an `ImageJ*`/`Fiji*`-named executable in `Contents/MacOS`.
+- **The Fiji hand-off — verified against Fiji 2026 (Homebrew), one caveat.**
+  Confirmed on this machine: `/Applications/Fiji/fiji -macro <file.ijm>`
+  dispatches to `net.imagej.Main` (native arm64), and the generated macro runs
+  clean headless (`--headless -macro`) — `open`, `setMinAndMax`, mask→`Create
+  Selection`→`Restore Selection`, and `run("Spectrum")`/`run("mpl-viridis")`
+  all execute, and `mpl-viridis.lut` ships in `/Applications/Fiji/luts`. The
+  Fiji preference is set to `/Applications/Fiji/fiji`. **Caveat:** the *live
+  GUI* launch (`_spawn_fiji` → `QProcess.startDetached`, and single-instance
+  forwarding into an already-open Fiji) was not clicked through end to end;
+  tests stub `_spawn_fiji`. The **new Fiji "App Suite" is a plain directory
+  with a top-level `fiji` script, not a `.app`** — `_resolve_fiji_exe` handles
+  the directory, the script, and the classic `.app` bundle.
 - **A `QDialogButtonBox` button with `AcceptRole` emits `accepted` before your
   own `clicked` slot runs.** The Fiji button therefore uses `ActionRole` and
   calls `self.accept()` itself after setting `_open_fiji`, or the flag would be

@@ -116,9 +116,9 @@ class PreferencesDialog(QDialog):
         self.fiji_edit = QLineEdit(fiji_path())
         self.fiji_edit.setPlaceholderText("(not set — the Fiji button stays disabled)")
         self.fiji_edit.setToolTip(
-            "The Fiji application or launcher. On macOS pick Fiji.app; ChronoGate "
-            "resolves the launcher inside it. Enables 'Export & open in Fiji' in "
-            "the export dialog.")
+            "The Fiji launcher. New Fiji (e.g. Homebrew): the 'fiji' script in "
+            "/Applications/Fiji, or that folder. Classic install: Fiji.app. "
+            "Enables 'Export & open in Fiji' in the export dialog.")
         btn_fiji = QPushButton("Browse…")
         btn_fiji.clicked.connect(self._browse_fiji)
         fiji_row = QHBoxLayout()
@@ -145,14 +145,15 @@ class PreferencesDialog(QDialog):
             self.export_dir.setText(d)
 
     def _browse_fiji(self) -> None:
-        # A macOS .app is a directory; a Linux/Windows launcher is a file. Offer
-        # a file picker (it can still descend into a bundle), and default the
-        # start location to /Applications where Fiji.app usually lives.
+        # New Fiji ships a plain `fiji` launcher script (a file); classic Fiji is
+        # a .app bundle (a dir). A file picker selects the script directly and,
+        # with DontUseNativeDialog, still descends into a .app to reach it.
+        # ChronoGate's resolver also accepts the App-Suite *folder*, so typing
+        # /Applications/Fiji works too.
         start = self.fiji_edit.text() or "/Applications"
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choose the Fiji application or launcher", start,
-            "Applications (*.app);;All files (*)", "",
-            QFileDialog.Option.DontUseNativeDialog)
+            self, "Choose the Fiji launcher (the 'fiji' script) or a .app bundle",
+            start, "All files (*)", "", QFileDialog.Option.DontUseNativeDialog)
         if path:
             self.fiji_edit.setText(path)
 
