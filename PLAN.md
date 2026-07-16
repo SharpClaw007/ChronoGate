@@ -1,7 +1,7 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.16.1, working tree clean,
-54 tests green (15 in `test_gating.py`, 39 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.16.2, working tree clean,
+55 tests green (16 in `test_gating.py`, 39 in `test_ui_smoke.py`).**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -19,7 +19,23 @@ every change ships with a test and a green run of both suites.
 
 ## Where we left off
 
-Nothing is in progress. v0.16 added **Export & open in Fiji** (ImageJ). A
+Nothing is in progress. v0.16.2 added **installer packaging** (`packaging/`,
+`.github/workflows/build.yml`): PyInstaller one-folder → Inno Setup `.exe` on
+Windows, PyInstaller `.app` → `hdiutil` drag-to-Applications `.dmg` on macOS,
+rebuilt on **every push** (two CI jobs, artifacts uploaded). One shared spec
+`packaging/chronogate.spec` (adds `BUNDLE` only on Darwin; entry is an
+**absolute** path to `run.py` — a spec resolves a bare script name relative to
+*itself*, i.e. `packaging/`, not cwd). Frozen apps skip the Rosetta re-exec and
+the Rosetta warning (`getattr(sys, "frozen", False)` guards in
+`__main__._reexec_native_arm64` and `app._warn_if_rosetta`) — else
+`sys.executable` is the bundle and `-m chronogate` breaks. **Verified locally
+on macOS arm64**: 137 MB `.app`, frozen binary runs (`--help` + a headless Qt
+load with no fatal plugin errors), 63 MB `.dmg` built. **Not yet run**: the
+Windows job (no Windows box here — Inno `.iss` is structure-checked only) and
+the whole thing needs a **git remote** before CI fires (none configured). No
+code signing / notarization (see landmine) — installers work but warn.
+
+v0.16 added **Export & open in Fiji** (ImageJ). A
 third export-dialog button (`ActionRole`, not `AcceptRole` — else the box
 emits `accepted` before the clicked-slot sets the flag) runs the normal
 export, forces the raw TIFF on (Fiji opens the raster), writes an ImageJ
@@ -212,6 +228,19 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
 - **BSD `sed` has no `\b`.** A `sed -i '' 's/\bfoo\b/bar/g'` silently does nothing.
 - **macOS:** run native arm64, never Rosetta; `QFileDialog` must use
   `DontUseNativeDialog`; join the decode `QThread` on close or you get a SIGABRT.
+- **A PyInstaller `.spec` resolves a bare script name relative to the spec
+  file, not the working directory.** `Analysis(["run.py"], …)` in
+  `packaging/chronogate.spec` looked for `packaging/run.py` and failed; the fix
+  is an absolute `str(ROOT / "run.py")`. The frozen app also had to gain
+  `sys.frozen` guards (Rosetta re-exec + warning) or it would try to relaunch
+  the bundle as `python -m chronogate`.
+- **Installers are unsigned.** macOS Gatekeeper will refuse the `.dmg` app
+  ("damaged / unidentified developer") until it is signed with a Developer ID
+  and notarized ($99/yr); Windows SmartScreen warns on the `.exe` until it is
+  code-signed. Fine for lab machines (right-click ▸ Open on macOS; "More info ▸
+  Run anyway" on Windows), a blocker for public distribution. Not done here.
+- **CI needs a git remote.** `build.yml` (and `tests.yml`) only fire once the
+  repo is pushed to GitHub — none is configured yet.
 - **The Fiji hand-off — verified against Fiji 2026 (Homebrew), one caveat.**
   Confirmed on this machine: `/Applications/Fiji/fiji -macro <file.ijm>`
   dispatches to `net.imagej.Main` (native arm64), and the generated macro runs

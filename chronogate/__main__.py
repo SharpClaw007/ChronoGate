@@ -28,6 +28,10 @@ def _reexec_native_arm64() -> None:
     import os
     import subprocess
 
+    # A frozen (PyInstaller) app is already built for the right architecture, and
+    # sys.executable is the bundle, not a Python that understands -m chronogate.
+    if getattr(sys, "frozen", False):
+        return
     if sys.platform != "darwin" or os.environ.get("CHRONOGATE_NATIVE"):
         return
     try:

@@ -16,7 +16,9 @@ def _warn_if_rosetta() -> None:
     Qt GUIs are noticeably crash-prone in that translated environment; a native
     arm64 Python avoids it entirely.
     """
-    if sys.platform != "darwin":
+    # A frozen build is native by construction; the advice (run a native Python)
+    # does not apply, and there is no CHRONOGATE_PYTHON venv to point at.
+    if sys.platform != "darwin" or getattr(sys, "frozen", False):
         return
     try:
         import ctypes

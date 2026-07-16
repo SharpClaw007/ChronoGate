@@ -549,6 +549,31 @@ def test_one_page_report_export():
     print("OK: one-page report (PNG+PDF, 4 roles) with sibling CSVs + raw TIFF.")
 
 
+def test_frozen_app_skips_rosetta_reexec():
+    """A PyInstaller-frozen app must NOT try the Rosetta re-exec: sys.executable
+    is the bundle (not a Python that understands ``-m chronogate``), and the
+    build is already the right architecture. The guard must fire before any
+    subprocess call."""
+    import subprocess
+    from chronogate import __main__ as m
+
+    calls = []
+    orig_run, orig_frozen = subprocess.run, getattr(sys, "frozen", None)
+    subprocess.run = lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(
+        AssertionError("subprocess.run called while frozen"))
+    sys.frozen = True
+    try:
+        m._reexec_native_arm64()          # must return immediately, no subprocess
+    finally:
+        subprocess.run = orig_run
+        if orig_frozen is None:
+            del sys.frozen
+        else:
+            sys.frozen = orig_frozen
+    assert not calls
+    print("OK: frozen app skips the Rosetta re-exec (no subprocess).")
+
+
 def test_fiji_macro_and_command():
     """The Fiji hand-off builders (pure, Qt-free): an ImageJ macro that opens
     the raw-value raster, sets ChronoGate's display range, restores the
@@ -621,6 +646,7 @@ if __name__ == "__main__":
         test_phasor_second_harmonic()
         test_mask_stats_aggregates_selection()
         test_one_page_report_export()
+        test_frozen_app_skips_rosetta_reexec()
         test_fiji_macro_and_command()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
