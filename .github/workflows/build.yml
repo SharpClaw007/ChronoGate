@@ -1,8 +1,11 @@
 name: build-installers
 
-# Rebuild both installers on every push (and on demand / for tagged releases).
+# Rebuild both installers on every push and on demand. Pushing a version tag
+# (v*) additionally publishes a GitHub Release with both installers attached.
 on:
   push:
+    tags: ["v*"]
+    branches: ["**"]
   workflow_dispatch:
 
 jobs:
@@ -70,3 +73,26 @@ jobs:
           name: ChronoGate-macOS-${{ steps.ver.outputs.version }}
           path: dist/ChronoGate-*.dmg
           if-no-files-found: error
+
+  # On a version tag, gather both installers and publish a GitHub Release.
+  release:
+    needs: [windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # required to create the release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts     # each artifact lands in artifacts/<name>/
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "ChronoGate ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            artifacts/*/ChronoGate-*.exe \
+            artifacts/*/ChronoGate-*.dmg
