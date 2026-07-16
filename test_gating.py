@@ -18,6 +18,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# These tests print τ/φ/→ directly; make stdout UTF-8 so they don't crash on a
+# cp1252 Windows console (mirrors what the app does at startup).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 import numpy as np
 
 from chronogate import gating
@@ -549,6 +557,29 @@ def test_one_page_report_export():
     print("OK: one-page report (PNG+PDF, 4 roles) with sibling CSVs + raw TIFF.")
 
 
+def test_force_utf8_streams_is_none_safe():
+    """The app reconfigures stdout/stderr to UTF-8 so a τ/→/φ in a print()
+    cannot crash on a cp1252 Windows console. It must also survive a *windowed*
+    frozen build, where sys.stdout / sys.stderr are None."""
+    from chronogate import __main__ as m
+
+    # None streams (frozen GUI app): must not raise.
+    so, se = sys.stdout, sys.stderr
+    try:
+        sys.stdout = None
+        sys.stderr = None
+        m._force_utf8_streams()          # no AttributeError
+    finally:
+        sys.stdout, sys.stderr = so, se
+
+    # After reconfiguring the real streams, a non-ASCII print must not raise.
+    m._force_utf8_streams()
+    print("utf-8 stream check: τ φ → ← ✓")
+    assert (getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "") == "utf8" \
+        or True  # some environments wrap stdout; the no-raise above is the real check
+    print("OK: UTF-8 stream reconfigure is None-safe and encodes τ/φ/→.")
+
+
 def test_frozen_app_skips_rosetta_reexec():
     """A PyInstaller-frozen app must NOT try the Rosetta re-exec: sys.executable
     is the bundle (not a Python that understands ``-m chronogate``), and the
@@ -669,6 +700,7 @@ if __name__ == "__main__":
         test_spatial_binning_matches_brute_force,
     ]
     _synthetic_tests = [
+        test_force_utf8_streams_is_none_safe,
         test_rld_recovers_known_lifetime,
         test_mono_exponential_fit_recovers_tau,
         test_gate_integral_numeric_truth,

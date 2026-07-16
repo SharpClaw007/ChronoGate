@@ -1,8 +1,8 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.16.3, working tree clean,
-55 tests green (16 in `test_gating.py`, 39 in `test_ui_smoke.py`);
-the test suite now also runs on Windows + macOS in CI.**
+**State at the end of the last session: v0.16.4, working tree clean,
+56 tests green (17 in `test_gating.py`, 39 in `test_ui_smoke.py`);
+the test suite runs on Windows + macOS + Linux in CI.**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):
@@ -258,6 +258,13 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
   own `clicked` slot runs.** The Fiji button therefore uses `ActionRole` and
   calls `self.accept()` itself after setting `_open_fiji`, or the flag would be
   read stale (plain Export vs Fiji indistinguishable).
+- **A Windows console is cp1252 — a non-ASCII `print()` crashes it.** The app
+  prints τ / → / ← / φ (status echoes, the "Exported → …" line); on a Windows
+  console those raise `UnicodeEncodeError` and abort the operation. `main()`
+  now calls `_force_utf8_streams()` (reconfigures stdout/stderr to UTF-8,
+  `errors="replace"`, None-safe for a windowed frozen build); the two test
+  files do the same at import. The cross-OS CI (below) is what caught this —
+  it never ran on Windows before.
 - **A reused export folder makes the dialog look broken.** Exporting a
   *subset* of artefacts into a folder still holding an earlier full export is
   indistinguishable from "it ignored my checkboxes" (identical basenames, no

@@ -17,6 +17,24 @@ from .loader import UnsupportedFileError
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "3_FLIM_stack_ptu"
 
 
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr encode UTF-8, replacing anything unmappable.
+
+    The app prints τ, →, φ and other non-ASCII. On a Windows console the default
+    encoding is cp1252, so such a print raises ``UnicodeEncodeError`` and can
+    abort the operation. Reconfiguring to UTF-8 (with ``errors="replace"``) makes
+    prints safe everywhere. In a *windowed* frozen build ``sys.stdout`` /
+    ``sys.stderr`` can be ``None``; the guard handles that.
+    """
+    import sys as _sys
+    for stream in (_sys.stdout, _sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # None stream, already-detached, or a stream without reconfigure().
+            pass
+
+
 def _reexec_native_arm64() -> None:
     """On Apple Silicon under Rosetta, re-run this same interpreter natively.
 
@@ -74,6 +92,7 @@ def _resolve_path(arg: str | None) -> Path | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()   # τ/→/φ in a print() must not crash a cp1252 console
     _reexec_native_arm64()  # go native on Apple Silicon before loading the GUI
 
     parser = argparse.ArgumentParser(

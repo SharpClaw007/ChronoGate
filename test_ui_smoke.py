@@ -24,6 +24,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# These tests print τ/→ directly; make stdout UTF-8 so they don't crash on a
+# cp1252 Windows console.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 # Must be set before any Qt import.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MPLBACKEND", "QtAgg")
