@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.12", "3.13"]   # ptufile>=2026.6.6 needs >=3.12
     env:
       QT_QPA_PLATFORM: offscreen   # headless Qt
       MPLBACKEND: Agg

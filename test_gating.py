@@ -631,23 +631,40 @@ def test_fiji_macro_and_command():
 
 
 if __name__ == "__main__":
+    # A few tests exercise the real ptufile decode path against the example
+    # stack; that data is large and not version-controlled, so on CI / a fresh
+    # checkout it is absent. Skip just those; the synthetic tests (the bulk of
+    # the numeric truth checks) need no files and always run.
+    _data_tests = [
+        test_prefix_sum_matches_direct_sum,
+        test_time_axis_is_calibrated,
+        test_spatial_binning_matches_brute_force,
+    ]
+    _synthetic_tests = [
+        test_rld_recovers_known_lifetime,
+        test_mono_exponential_fit_recovers_tau,
+        test_gate_integral_numeric_truth,
+        test_auto_floor_robust_to_rising_edge,
+        test_phasor_mono_exponential_on_semicircle,
+        test_mask_decay_pools_selected_pixels,
+        test_metrics_rank_filters_and_sorts,
+        test_phasor_calibration_recovers_true_position,
+        test_phasor_second_harmonic,
+        test_mask_stats_aggregates_selection,
+        test_one_page_report_export,
+        test_frozen_app_skips_rosetta_reexec,
+        test_fiji_macro_and_command,
+    ]
+    has_data = bool(list(DATA_DIR.rglob("*.ptu")))
     try:
-        test_prefix_sum_matches_direct_sum()
-        test_time_axis_is_calibrated()
-        test_spatial_binning_matches_brute_force()
-        test_rld_recovers_known_lifetime()
-        test_mono_exponential_fit_recovers_tau()
-        test_gate_integral_numeric_truth()
-        test_auto_floor_robust_to_rising_edge()
-        test_phasor_mono_exponential_on_semicircle()
-        test_mask_decay_pools_selected_pixels()
-        test_metrics_rank_filters_and_sorts()
-        test_phasor_calibration_recovers_true_position()
-        test_phasor_second_harmonic()
-        test_mask_stats_aggregates_selection()
-        test_one_page_report_export()
-        test_frozen_app_skips_rosetta_reexec()
-        test_fiji_macro_and_command()
+        if has_data:
+            for t in _data_tests:
+                t()
+        else:
+            print(f"No sample .ptu under {DATA_DIR.name}; skipping "
+                  f"{len(_data_tests)} data-dependent tests (synthetic tests still run).")
+        for t in _synthetic_tests:
+            t()
     except AssertionError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)

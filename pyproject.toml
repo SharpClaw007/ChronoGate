@@ -7,7 +7,7 @@ name = "chronogate"
 version = "0.16.2"
 description = "Interactive time-gating, rapid-lifetime & phasor viewer for PicoQuant FLIM (.ptu) data"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "SharpClaw007", email = "juanquiviri@gmail.com" }]
 keywords = ["FLIM", "TCSPC", "PicoQuant", "PTU", "fluorescence", "lifetime", "phasor", "microscopy"]

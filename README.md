@@ -11,7 +11,7 @@ fluorescence decay, and lets you drag a time gate across it while the gated
 image, apparent-lifetime map, and phasor plot update live. Built for anyone who
 wants fit-free lifetime *contrast* from raw TCSPC data without leaving a desktop app.
 
-[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/PySide6-Qt%206-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython/)
 [![NumPy](https://img.shields.io/badge/NumPy-1.24+-013243?logo=numpy&logoColor=white)](https://numpy.org/)
 [![Matplotlib](https://img.shields.io/badge/Matplotlib-3.7+-11557C?logo=python&logoColor=white)](https://matplotlib.org/)
@@ -101,7 +101,7 @@ FLIM workflow, with a clean hand-off to Fiji/ImageJ for the rest.
 
 | Layer            | Technology                                                                 |
 |------------------|----------------------------------------------------------------------------|
-| Language         | [Python](https://www.python.org/) 3.9+                                      |
+| Language         | [Python](https://www.python.org/) 3.12+                                     |
 | Desktop UI       | [PySide6](https://doc.qt.io/qtforpython/) (Qt 6)                            |
 | Numerics         | [NumPy](https://numpy.org/) — the cube, prefix sums, RLD, phasor            |
 | Plots            | [Matplotlib](https://matplotlib.org/) (embedded, QtAgg)                     |
@@ -131,7 +131,7 @@ ChronoGate/
 
 | Requirement | Version | Notes                                           |
 |-------------|---------|-------------------------------------------------|
-| Python      | 3.9+    | 3.12 recommended; PySide6 ships `abi3` wheels   |
+| Python      | 3.12+   | Required by `ptufile`; PySide6 ships `abi3` wheels |
 | OS          | macOS / Windows | Native desktop app; Linux works from source |
 
 ```bash
