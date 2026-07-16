@@ -9,7 +9,7 @@ description = "Interactive time-gating, rapid-lifetime & phasor viewer for PicoQ
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "jr101" }]
+authors = [{ name = "SharpClaw007", email = "juanquiviri@gmail.com" }]
 keywords = ["FLIM", "TCSPC", "PicoQuant", "PTU", "fluorescence", "lifetime", "phasor", "microscopy"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jr101/ChronoGate"
+Homepage = "https://github.com/SharpClaw007/ChronoGate"
 
 [project.scripts]
 chronogate = "chronogate.__main__:main"
