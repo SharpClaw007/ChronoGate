@@ -635,10 +635,12 @@ def test_fiji_macro_and_command():
     m2 = ex.fiji_open_macro("/x/tau.tif", 0.0, 1.0, "Grays")
     assert "Create Selection" not in m2 and "Restore Selection" not in m2
 
-    # Command: a plain executable passes through; a .app bundle resolves to the
-    # launcher inside Contents/MacOS.
-    cmd = ex.fiji_command("/usr/local/bin/fiji", "/tmp/open.ijm")
-    assert cmd == ["/usr/local/bin/fiji", "-macro", "/tmp/open.ijm"]
+    # Command: a plain executable passes through unchanged (use a real temp file
+    # so the expected path matches on every OS -- a hardcoded POSIX string would
+    # round-trip to backslashes through pathlib on Windows).
+    plain = Path(tempfile.mkdtemp()) / "fiji-launcher"
+    plain.write_text("#!/bin/sh\n")
+    assert ex.fiji_command(str(plain), "/tmp/open.ijm") == [str(plain), "-macro", "/tmp/open.ijm"]
 
     app = Path(tempfile.mkdtemp()) / "Fiji.app"
     (app / "Contents" / "MacOS").mkdir(parents=True)
@@ -726,6 +728,8 @@ if __name__ == "__main__":
         for t in _synthetic_tests:
             t()
     except AssertionError as exc:
+        import traceback
+        traceback.print_exc()      # a bare assert prints nothing useful otherwise
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)
     print("All gating tests passed.")

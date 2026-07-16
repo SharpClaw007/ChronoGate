@@ -1773,6 +1773,8 @@ if __name__ == "__main__":
         test_restrict_export_to_selection()
         test_export_and_open_in_fiji()
     except AssertionError as exc:
+        import traceback
+        traceback.print_exc()      # a bare assert prints nothing useful otherwise
         print(f"FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)
     print("All UI smoke tests passed.")
