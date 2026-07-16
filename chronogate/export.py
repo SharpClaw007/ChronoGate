@@ -576,27 +576,44 @@ def fiji_open_macro(raw_tiff: str | Path, vmin: float, vmax: float, lut: str,
     return "\n".join(lines) + "\n"
 
 
+# Launcher basenames to look for inside a Fiji directory, most-preferred first.
+# A real executable is preferred over the .bat (which QProcess cannot exec
+# directly). Order is platform-agnostic on purpose: the resolver matches what
+# the folder actually contains, so a Windows layout resolves correctly even when
+# the check runs on macOS/Linux (and vice versa) -- which is how it is tested.
+_FIJI_LAUNCHERS = (
+    "ImageJ-win64.exe", "ImageJ-win32.exe",            # classic Windows
+    "fiji-windows-x64.exe", "fiji-windows-x86.exe",    # new Windows
+    "ImageJ-linux64", "ImageJ-linux32",                # classic Linux
+    "fiji-linux-x64", "fiji-linux-arm64",              # new Linux
+    "fiji", "fiji.sh", "ImageJ", "imagej",             # unix launcher scripts
+    "fiji.bat",                                         # last resort (needs cmd /c)
+)
+
+
 def _resolve_fiji_exe(fiji_path: str | Path) -> str:
     """Resolve whatever the user pointed at to an actual launcher executable.
 
-    Three shapes seen in the wild:
+    Shapes seen in the wild:
 
-    * the launcher **file** itself (``/Applications/Fiji/fiji``) -> unchanged;
-    * the new Fiji "App Suite" **directory** (``/Applications/Fiji``, how brew
-      installs it) -> its top-level ``fiji`` shell script, which dispatches to
-      the right OS/arch binary itself;
+    * the launcher **file** itself (``/Applications/Fiji/fiji``,
+      ``...\\ImageJ-win64.exe``, ``...\\fiji.bat``) -> unchanged;
+    * the new Fiji "App Suite" **directory** (``/Applications/Fiji`` on macOS,
+      ``C:\\...\\Fiji`` on Windows) -> its top-level launcher, preferring a real
+      OS/arch binary over the ``fiji.bat`` fallback;
     * a classic macOS ``.app`` **bundle** -> the launcher in ``Contents/MacOS``.
     """
     p = Path(fiji_path)
     if p.is_file():
         return str(p)
     if p.is_dir():
-        # New App Suite: a top-level `fiji` (or `ImageJ`) launcher script.
-        for name in ("fiji", "fiji.sh", "ImageJ", "imagej"):
+        # A top-level launcher (covers the new App Suite on every OS and a
+        # classic Windows Fiji.app folder, which is a plain dir with the .exe).
+        for name in _FIJI_LAUNCHERS:
             cand = p / name
             if cand.is_file():
                 return str(cand)
-        # Classic .app bundle (or any dir with a Contents/MacOS launcher).
+        # Classic macOS .app bundle: the launcher lives in Contents/MacOS.
         macos = p / "Contents" / "MacOS"
         if macos.is_dir():
             cands = sorted(x for x in macos.iterdir() if x.is_file())
@@ -609,8 +626,16 @@ def _resolve_fiji_exe(fiji_path: str | Path) -> str:
 
 
 def fiji_command(fiji_path: str | Path, macro_path: str | Path) -> list[str]:
-    """The argv to launch Fiji running an open-macro (GUI stays up for viewing)."""
-    return [_resolve_fiji_exe(fiji_path), "-macro", str(macro_path)]
+    """The argv to launch Fiji running an open-macro (GUI stays up for viewing).
+
+    A Windows ``.bat`` launcher is not directly executable by
+    ``QProcess.startDetached``; it is run through ``cmd /c``.
+    """
+    exe = _resolve_fiji_exe(fiji_path)
+    args = [exe, "-macro", str(macro_path)]
+    if exe.lower().endswith(".bat"):
+        return ["cmd", "/c", *args]
+    return args
 
 
 def save_settings(path: str | Path, settings: dict[str, Any], metadata: dict[str, Any]) -> None:

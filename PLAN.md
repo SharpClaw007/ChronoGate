@@ -1,7 +1,8 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.16.2, working tree clean,
-55 tests green (16 in `test_gating.py`, 39 in `test_ui_smoke.py`).**
+**State at the end of the last session: v0.16.3, working tree clean,
+55 tests green (16 in `test_gating.py`, 39 in `test_ui_smoke.py`);
+the test suite now also runs on Windows + macOS in CI.**
 
 Run both suites with the project venv (there is no pytest installed; the files are
 runnable directly):

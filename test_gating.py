@@ -618,16 +618,44 @@ def test_fiji_macro_and_command():
     assert cmd2[0] == str(launcher), cmd2
 
     # New Fiji "App Suite" (brew): /Applications/Fiji is a plain directory whose
-    # top-level `fiji` shell script is the arch-dispatching launcher. Pointed at
-    # the directory, resolve to that script; pointed at the script, keep it.
+    # top-level `fiji` shell script is the arch-dispatching launcher. It also
+    # ships a fiji.bat; on a unix folder the script wins over the .bat. Pointed
+    # at the directory, resolve to the script; pointed at the script, keep it.
     suite = Path(tempfile.mkdtemp()) / "Fiji"
     suite.mkdir()
     fiji_sh = suite / "fiji"
     fiji_sh.write_text("#!/bin/sh\n"); fiji_sh.chmod(0o755)
+    (suite / "fiji.bat").write_text("@echo off\n")            # cross-platform sibling
     (suite / "Fiji.app" / "Contents" / "MacOS").mkdir(parents=True)  # a decoy bundle
     assert ex.fiji_command(str(suite), "/tmp/o.ijm")[0] == str(fiji_sh)
     assert ex.fiji_command(str(fiji_sh), "/tmp/o.ijm")[0] == str(fiji_sh)
-    print("OK: Fiji macro (open+range+ROI+LUT-last) and launcher resolution.")
+
+    # --- Windows layouts ---------------------------------------------------
+    # New Fiji on Windows: a folder with fiji-windows-x64.exe (+ fiji.bat). The
+    # real .exe is preferred over the .bat (no cmd wrapper needed).
+    win_new = Path(tempfile.mkdtemp()) / "Fiji"
+    win_new.mkdir()
+    win_exe = win_new / "fiji-windows-x64.exe"
+    win_exe.write_bytes(b"MZ")
+    (win_new / "fiji.bat").write_text("@echo off\n")
+    assert ex.fiji_command(str(win_new), "C:/x/o.ijm") == [str(win_exe), "-macro", "C:/x/o.ijm"]
+
+    # Classic Fiji on Windows: Fiji.app is a plain folder holding ImageJ-win64.exe.
+    win_classic = Path(tempfile.mkdtemp()) / "Fiji.app"
+    win_classic.mkdir()
+    ij_exe = win_classic / "ImageJ-win64.exe"
+    ij_exe.write_bytes(b"MZ")
+    assert ex.fiji_command(str(win_classic), "C:/x/o.ijm")[0] == str(ij_exe)
+
+    # A .bat-only folder resolves to the .bat, and the command wraps it in
+    # `cmd /c` (QProcess cannot exec a .bat directly on Windows).
+    bat_only = Path(tempfile.mkdtemp()) / "Fiji"
+    bat_only.mkdir()
+    bat = bat_only / "fiji.bat"
+    bat.write_text("@echo off\n")
+    assert ex.fiji_command(str(bat_only), "C:/x/o.ijm") == ["cmd", "/c", str(bat), "-macro", "C:/x/o.ijm"]
+    assert ex.fiji_command(str(bat), "C:/x/o.ijm") == ["cmd", "/c", str(bat), "-macro", "C:/x/o.ijm"]
+    print("OK: Fiji macro (open+range+ROI+LUT-last) and launcher resolution (unix + windows).")
 
 
 if __name__ == "__main__":

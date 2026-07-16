@@ -116,9 +116,9 @@ class PreferencesDialog(QDialog):
         self.fiji_edit = QLineEdit(fiji_path())
         self.fiji_edit.setPlaceholderText("(not set — the Fiji button stays disabled)")
         self.fiji_edit.setToolTip(
-            "The Fiji launcher. New Fiji (e.g. Homebrew): the 'fiji' script in "
-            "/Applications/Fiji, or that folder. Classic install: Fiji.app. "
-            "Enables 'Export & open in Fiji' in the export dialog.")
+            "The Fiji launcher, or the Fiji folder. macOS: /Applications/Fiji "
+            "(or Fiji.app). Windows: the Fiji folder, or ImageJ-win64.exe / "
+            "fiji.bat inside it. Enables 'Export & open in Fiji' in the export dialog.")
         btn_fiji = QPushButton("Browse…")
         btn_fiji.clicked.connect(self._browse_fiji)
         fiji_row = QHBoxLayout()

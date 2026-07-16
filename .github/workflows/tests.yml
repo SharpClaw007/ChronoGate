@@ -8,13 +8,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]   # ptufile>=2026.6.6 needs >=3.12
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
     env:
-      QT_QPA_PLATFORM: offscreen   # headless Qt
+      QT_QPA_PLATFORM: offscreen   # headless Qt on every OS
       MPLBACKEND: Agg
       PYTHONPATH: .
     steps:
@@ -26,6 +27,7 @@ jobs:
           cache: pip
 
       - name: System libs for headless Qt
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y
              libegl1 libgl1 libxkbcommon0 libdbus-1-3 libglib2.0-0
 
