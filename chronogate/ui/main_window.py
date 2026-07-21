@@ -245,6 +245,12 @@ class MainWindow(QMainWindow):
             "short lifetimes apart and helps disambiguate multi-component mixtures. "
             "Each harmonic keeps its own reference calibration.")
 
+        self.act_reconv = QAction("&IRF lifetime fit…", self)
+        self.act_reconv.setToolTip(
+            "Rigorous, IRF-deconvolved lifetime by reconvolution fitting "
+            "(mono/bi-exponential, Poisson MLE) -- a region fit or a per-pixel "
+            "τ-map. Distinct from the fit-free RLD τ and phasor.")
+
         self.act_undo_pick = QAction("&Undo selection change", self,
                                      shortcut=QKeySequence.Undo)
         self.act_undo_pick.setToolTip(
@@ -279,6 +285,7 @@ class MainWindow(QMainWindow):
         m_view.addAction(self.act_harmonic2)
         m_view.addAction(self.act_phasor_cal)
         m_view.addAction(self.act_phasor_cal_clear)
+        m_view.addAction(self.act_reconv)
         m_view.addSeparator()
         m_view.addAction(self.act_pixels)
         m_view.addAction(self.act_undo_pick)
@@ -319,6 +326,7 @@ class MainWindow(QMainWindow):
         self.act_phasor_cal.triggered.connect(self.controller._on_phasor_calibrate)
         self.act_phasor_cal_clear.triggered.connect(self.controller.clear_phasor_calibration)
         self.act_harmonic2.toggled.connect(self.controller._on_harmonic2)
+        self.act_reconv.triggered.connect(self.controller._on_reconv_fit)
         self.act_undo_pick.triggered.connect(self.controller.undo_pick)
         self.act_save.triggered.connect(self.filep.btn_save.click)
         self.act_load.triggered.connect(self.filep.btn_load.click)
@@ -406,7 +414,8 @@ class MainWindow(QMainWindow):
                   self.act_save, self.act_load,
                   self.act_intensity, self.act_lifetime, self.act_phasor, self.act_log,
                   self.act_floor, self.act_pixels, self.act_phasor_cal,
-                  self.act_phasor_cal_clear, self.act_harmonic2, self.act_undo_pick):
+                  self.act_phasor_cal_clear, self.act_harmonic2, self.act_reconv,
+                  self.act_undo_pick):
             a.setEnabled(loaded)
         if not loaded:
             self.pixel_dock.hide()

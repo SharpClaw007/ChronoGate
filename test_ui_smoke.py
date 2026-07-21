@@ -1667,6 +1667,52 @@ def test_export_and_open_in_fiji() -> None:
     print("OK: Export & open in Fiji — export, write macro, launch (forced raw).")
 
 
+def test_irf_reconv_fit_ui() -> None:
+    """The 'IRF lifetime fit' action: dialog → reconvolution fit → result stashed.
+
+    Drives the region single-fit path (a selection + Gaussian IRF, defaults) and
+    asserts a finite mean τ lands on the controller; then the per-pixel map path
+    (with a high photon threshold so it stays fast) and asserts the map dict is
+    stored. Modal message/progress dialogs are stubbed so nothing blocks."""
+    import numpy as np
+    from PySide6.QtWidgets import QDialog, QMessageBox
+    from chronogate.ui import reconv_dialog as rd
+
+    w = _window()
+    c = w.controller
+    c._on_pixel_rows([(10, 20), (11, 21), (12, 22), (13, 23)])   # a selection to pool
+
+    msgs = {"info": 0, "crit": 0}
+    orig_info, orig_crit = QMessageBox.information, QMessageBox.critical
+    orig_exec = rd.ReconvDialog.exec
+    QMessageBox.information = staticmethod(lambda *a, **k: msgs.__setitem__("info", msgs["info"] + 1))
+    QMessageBox.critical = staticmethod(lambda *a, **k: msgs.__setitem__("crit", msgs["crit"] + 1))
+    try:
+        # Region fit: defaults are Gaussian IRF, mono, MLE, region (selection present).
+        rd.ReconvDialog.exec = lambda self: QDialog.Accepted
+        c._on_reconv_fit()
+        fr = getattr(c, "_last_reconv", None)
+        assert fr is not None, "region reconvolution result must be stashed"
+        assert np.isfinite(fr.tau_mean_ns) and fr.tau_mean_ns > 0, fr.tau_mean_ns
+        assert fr.reduced_chi2 > 0 and msgs["crit"] == 0
+
+        # Map path: force whole-image τ-map with a huge threshold (fast: ~0 pixels).
+        def exec_map(self):
+            self.rb_map.setChecked(True)
+            self.sp_thresh.setValue(10_000_000)
+            return QDialog.Accepted
+        rd.ReconvDialog.exec = exec_map
+        c._on_reconv_fit()
+        res = getattr(c, "_reconv_map", None)
+        assert res is not None and {"tau1", "sigma_tau", "chi2", "n_fitted"} <= set(res)
+        assert res["tau1"].shape == c.model.intensity.shape
+    finally:
+        QMessageBox.information, QMessageBox.critical = orig_info, orig_crit
+        rd.ReconvDialog.exec = orig_exec
+    print(f"OK: IRF reconvolution UI — region fit τ={fr.tau_mean_ns:.3f} ns stashed, "
+          f"τ-map plumbed ({msgs['info']} result dialogs, 0 errors).")
+
+
 def test_no_qt_virtual_shadowing() -> None:
     """No widget attribute may shadow a Qt virtual method.
 
@@ -1772,6 +1818,7 @@ if __name__ == "__main__":
         test_one_page_report_ui()
         test_restrict_export_to_selection()
         test_export_and_open_in_fiji()
+        test_irf_reconv_fit_ui()
     except AssertionError as exc:
         import traceback
         traceback.print_exc()      # a bare assert prints nothing useful otherwise

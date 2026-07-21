@@ -35,14 +35,14 @@ from PySide6.QtCore import QObject, Qt, Signal, QSignalBlocker, QThread, QTimer
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from .. import gating, metrics
-from ..loader import find_stack, load_ptu, FrameCache
+from ..loader import find_stack, load_flim, FrameCache
 from .. import export as export_mod
 from ..export import export_all, load_settings, save_settings
 from . import prefs, theme
 
 
 class _DecodeWorker(QObject):
-    """Runs a (possibly slow) ``load_ptu`` on a background QThread.
+    """Runs a (possibly slow) ``load_flim`` on a background QThread.
 
     Lives in the worker thread (``moveToThread``); emits ``progress`` per frame
     and ``done``/``failed`` back to the controller (a main-thread QObject, so the
@@ -59,8 +59,8 @@ class _DecodeWorker(QObject):
 
     def run(self) -> None:
         try:
-            cube = load_ptu(self._path, channel=self._channel, sum_frames=self._sum,
-                            progress=lambda d, t: self.progress.emit(int(d), int(t)))
+            cube = load_flim(self._path, channel=self._channel, sum_frames=self._sum,
+                             progress=lambda d, t: self.progress.emit(int(d), int(t)))
             self.done.emit(cube)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user cleanly
             self.failed.emit(str(exc))
@@ -257,7 +257,7 @@ class ViewerController(QObject):
             return
         if not self.async_decode:      # synchronous (no running event loop)
             try:
-                cube = load_ptu(path, channel=channel, sum_frames=sum_frames)
+                cube = load_flim(path, channel=channel, sum_frames=sum_frames)
                 print(cube.summary())
                 self._cube_cache.put(key, cube)
             except Exception as exc:   # noqa: BLE001
@@ -336,8 +336,8 @@ class ViewerController(QObject):
         key = (str(path), self.channel, self.sum_frames)
         cube = self._cube_cache.get(key)
         if cube is None:
-            cube = load_ptu(path, channel=self.channel, sum_frames=self.sum_frames,
-                            progress=progress)
+            cube = load_flim(path, channel=self.channel, sum_frames=self.sum_frames,
+                             progress=progress)
             print(cube.summary())
             self._cube_cache.put(key, cube)
         return gating.GatingModel(cube, bin_factor=self.bin_size)
@@ -1274,7 +1274,7 @@ class ViewerController(QObject):
         key = (str(self.stack[self.z_index]), ch, self.sum_frames)
         cube = self._cube_cache.get(key)
         if cube is None:
-            cube = load_ptu(self.stack[self.z_index], channel=ch, sum_frames=self.sum_frames)
+            cube = load_flim(self.stack[self.z_index], channel=ch, sum_frames=self.sum_frames)
             self._cube_cache.put(key, cube)
         m = gating.GatingModel(cube, bin_factor=self.bin_size)
         floor = self._floor_per_pixel() if self.apply_floor else 0.0
@@ -2273,8 +2273,9 @@ class ViewerController(QObject):
 
     def _on_open_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self.w, "Open a .ptu file / layer", self._dialog_dir(),
-            "PicoQuant PTU (*.ptu);;All files (*)", "", _DLG_OPT)
+            self.w, "Open a FLIM file / layer", self._dialog_dir(),
+            "FLIM data (*.ptu *.sdt);;PicoQuant PTU (*.ptu);;"
+            "Becker & Hickl SDT (*.sdt);;All files (*)", "", _DLG_OPT)
         if path:
             self.load_path(path)
 
@@ -2286,20 +2287,24 @@ class ViewerController(QObject):
             self.load_folder(directory)
 
     def load_folder(self, directory) -> None:
-        """Load the .ptu stack under ``directory`` (z-series across files).
+        """Load the FLIM stack under ``directory`` (z-series across files).
 
         Probes files so it opens the first *decodable FLIM image* rather than
         failing on a point-mode or old-style file, and reports what it skipped.
+        Any registered format (.ptu, .sdt, ...) is searched, not just .ptu.
         """
-        from ..loader import probe_ptu
+        from ..loader import flim_glob_patterns, probe_flim
         directory = Path(directory)
-        ptus = sorted(directory.rglob("*.ptu"))
-        if not ptus:
-            self.statusMessage.emit(f"No .ptu files found under {directory.name}.")
+        files: list[Path] = []
+        for pattern in flim_glob_patterns():
+            files.extend(directory.rglob(pattern))
+        files = sorted(files)
+        if not files:
+            self.statusMessage.emit(f"No FLIM files found under {directory.name}.")
             return
         chosen, skipped = None, []
-        for p in ptus:
-            status = probe_ptu(p)
+        for p in files:
+            status = probe_flim(p)
             if status == "image":
                 chosen = p
                 break
@@ -2307,7 +2312,8 @@ class ViewerController(QObject):
         if chosen is None:
             kinds = ", ".join(f"{skipped.count(k)} {k}" for k in sorted(set(skipped)))
             self.statusMessage.emit(
-                f"No openable FLIM image in {directory.name} — {len(ptus)} .ptu ({kinds}).")
+                f"No openable FLIM image in {directory.name} — "
+                f"{len(files)} FLIM file(s) ({kinds}).")
             return
         self._folder_skipped = skipped
         self.load_path(chosen)  # find_stack groups its numbered siblings
@@ -2693,7 +2699,7 @@ class ViewerController(QObject):
         res = m.resolution_ns
         lines = []
         if self.mode == "lifetime":
-            tau, _ = self._compute_lifetime_map()
+            tau, rl = self._compute_lifetime_map()
             if mask is not None:
                 tau = np.where(mask, tau, np.nan)
             f = tau[np.isfinite(tau)]
@@ -2701,6 +2707,14 @@ class ViewerController(QObject):
                 q1, med, q3 = np.percentile(f, [25, 50, 75])
                 lines.append(f"median τ = {med:.3f} ns  "
                              f"(IQR {q1:.3f}–{q3:.3f}, n={f.size:,} px)")
+                # Pooled region τ ± shot-noise σ (statistics of ALL selected
+                # photons together -- distinct from the per-pixel IQR above).
+                tau_r, sig_r = gating.rld_region_lifetime(
+                    rl["na"], rl["nb"], rl["dt_ns"], mask=mask,
+                    min_counts=self.rld_min_counts)
+                if np.isfinite(tau_r):
+                    lines.append(f"pooled τ = {tau_r:.3f} ± {sig_r:.3f} ns "
+                                 f"(shot-noise σ over the region's photons)")
             else:
                 lines.append("median τ = n/a — no pixel passed the RLD gates")
         elif self.mode == "phasor":
@@ -2847,6 +2861,99 @@ class ViewerController(QObject):
             select_mask=union, select_color=theme.SELECT)
         self.statusMessage.emit(f"Report → {out_dir}")
         return paths
+
+    # ------------------------------------------------------- IRF reconvolution
+    def _reconv_irf(self, dlg):
+        """Build the :class:`reconv.IRF` chosen in the dialog (Gaussian or file)."""
+        from .. import reconv
+        m = self.model
+        if dlg.irf_is_gaussian():
+            return reconv.IRF.gaussian(dlg.gaussian_center_ns(), dlg.gaussian_fwhm_ns(),
+                                       m.n_bins, m.resolution_ns)
+        path = dlg.irf_path()
+        if not path:
+            raise ValueError("No IRF file selected — choose a measured IRF or use the Gaussian model.")
+        irf_cube = load_flim(path, channel=self.channel)
+        return reconv.irf_from_cube_counts(irf_cube.counts, irf_cube.resolution_ns)
+
+    def _on_reconv_fit(self) -> None:
+        """Run an IRF-reconvolution lifetime fit (region single-fit or τ-map)."""
+        if self.model is None:
+            return
+        from PySide6.QtWidgets import QDialog, QMessageBox, QProgressDialog
+        from .reconv_dialog import ReconvDialog
+        from .. import reconv
+        m = self.model
+        union = self._union_pick_mask()
+        dlg = ReconvDialog(self.w, has_selection=union is not None,
+                           resolution_ns=m.resolution_ns, default_center_ns=m.t0_ns())
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            irf = self._reconv_irf(dlg)
+        except Exception as exc:  # noqa: BLE001 - bad IRF path/file, shown cleanly
+            QMessageBox.critical(self.w, "IRF error", str(exc))
+            return
+        kind, obj = dlg.model(), dlg.objective()
+
+        if not dlg.fit_map():
+            # One fit on the pooled selection (or the whole-frame summed decay).
+            if union is not None:
+                decay = np.rint(m.mask_decay(union) * int(union.sum()))
+            else:
+                decay = np.asarray(m.decay, dtype=float)
+            try:
+                fr = reconv.fit_decay(np.asarray(decay, dtype=float), irf, m.resolution_ns,
+                                      model=kind, objective=obj)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.critical(self.w, "Reconvolution fit failed", str(exc))
+                return
+            self._last_reconv = fr
+            comps = "\n".join(
+                f"    τ{i + 1} = {t:.3f} ± {s:.3f} ns" if np.isfinite(s)
+                else f"    τ{i + 1} = {t:.3f} ± n/a ns (unidentifiable)"
+                for i, (t, s) in enumerate(zip(fr.taus_ns, fr.sigma_tau_ns)))
+            scope = "selection" if union is not None else "whole frame"
+            QMessageBox.information(
+                self.w, "IRF lifetime fit",
+                f"Reconvolution fit ({kind}, {obj.upper()}) — {scope}\n\n{comps}\n"
+                f"    mean τ = {fr.tau_mean_ns:.3f} ns\n"
+                f"    reduced χ² = {fr.reduced_chi2:.3f}\n"
+                f"    IRF shift = {fr.shift_bins:.2f} bins\n\n"
+                "IRF-deconvolved — distinct from the fit-free RLD τ and phasor.")
+            self.statusMessage.emit(f"Reconvolution τ = {fr.tau_mean_ns:.3f} ns "
+                                    f"(reduced χ² {fr.reduced_chi2:.2f})")
+            return
+
+        # Per-pixel τ-map: seed from the RLD map, show a cancellable progress bar.
+        try:
+            seed_tau, _ = self._compute_lifetime_map()
+        except Exception:  # noqa: BLE001 - seeding is best-effort
+            seed_tau = None
+        prog = QProgressDialog("Fitting per-pixel lifetimes…", "Cancel", 0, 100, self.w)
+        prog.setWindowModality(Qt.WindowModal)
+        prog.setMinimumDuration(0)
+
+        def _progress(done, total):
+            prog.setMaximum(int(total) or 1)
+            prog.setValue(int(done))
+            QApplication.processEvents()
+
+        res = reconv.fit_map(m.counts, irf, m.resolution_ns, model=kind, objective=obj,
+                             photon_threshold=dlg.photon_threshold(), seed_tau_map=seed_tau,
+                             progress=_progress, cancel=prog.wasCanceled)
+        prog.close()
+        self._reconv_map = res
+        finite = res["tau1"][np.isfinite(res["tau1"])]
+        med = float(np.median(finite)) if finite.size else float("nan")
+        QMessageBox.information(
+            self.w, "IRF lifetime τ-map",
+            f"Reconvolution τ-map ({kind}, {obj.upper()})\n\n"
+            f"    fitted {res['n_fitted']:,} px (≥ {dlg.photon_threshold():g} photons)\n"
+            f"    median τ = {med:.3f} ns\n\n"
+            "Stored on the controller (self._reconv_map) for export.")
+        self.statusMessage.emit(f"Reconvolution τ-map: {res['n_fitted']:,} px, "
+                                f"median τ {med:.3f} ns")
 
     def _on_export_report(self) -> None:
         if self.model is None:
