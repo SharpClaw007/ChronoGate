@@ -24,7 +24,14 @@ _ver: dict = {}
 exec((ROOT / "chronogate" / "__init__.py").read_text().split("__all__")[0], _ver)
 VERSION = _ver.get("__version__", "0.0.0")
 
-hiddenimports = collect_submodules("chronogate")
+# chronogate submodules, plus explicit third-party leaves that are imported
+# lazily (inside functions) and so are easy for the static analyzer to miss:
+# reconv.py does `from scipy.optimize import least_squares`, and sdtfile backs
+# the .sdt reader. PyInstaller ships hooks that collect scipy/sdtfile once seen,
+# but naming them here is cheap insurance for the frozen build.
+hiddenimports = collect_submodules("chronogate") + [
+    "scipy.optimize", "scipy.linalg", "sdtfile",
+]
 
 a = Analysis(
     [str(ROOT / "run.py")],

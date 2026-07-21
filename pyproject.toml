@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chronogate"
-version = "0.16.2"
+version = "0.17.0"
 description = "Interactive time-gating, rapid-lifetime & phasor viewer for PicoQuant FLIM (.ptu) data"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -20,7 +20,9 @@ classifiers = [
 ]
 dependencies = [
     "ptufile>=2026.6.6",
+    "sdtfile>=2023",
     "numpy>=1.24",
+    "scipy>=1.10",
     "matplotlib>=3.7",
     "tifffile>=2023.7.10",
     "PySide6>=6.7",
