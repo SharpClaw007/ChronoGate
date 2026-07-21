@@ -25,8 +25,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import sdtfile
 from ptufile import PtuFile
+# NOTE: ``sdtfile`` is imported lazily inside ``load_sdt`` (not here), so importing
+# this module -- which happens at every startup -- never requires it. Only actually
+# opening a Becker & Hickl ``.sdt`` pulls it in. ptufile stays eager: it backs the
+# primary ``.ptu`` format and is always required.
 
 
 class FrameCache:
@@ -382,6 +385,13 @@ def load_sdt(
         actually found (defensive parsing, exactly like :func:`load_ptu`).
     """
     path = Path(path)
+    try:
+        import sdtfile
+    except ImportError as exc:
+        raise UnsupportedFileError(
+            "opening a Becker & Hickl .sdt file needs the 'sdtfile' package "
+            "(pip install sdtfile); it is not required for .ptu files."
+        ) from exc
     try:
         sdt = sdtfile.SdtFile(str(path))
     except Exception as exc:  # noqa: BLE001 - re-raise with context

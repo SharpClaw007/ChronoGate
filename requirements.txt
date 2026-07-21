@@ -2,9 +2,14 @@
 #
 # ptufile    BSD-3-Clause  -- reads PicoQuant .ptu TTTR files (the parser)
 # numpy      BSD-3-Clause  -- the cube, prefix sum, all numerics
+# scipy      BSD-3-Clause  -- least_squares for the IRF-reconvolution fit (reconv.py)
+# sdtfile    BSD-3-Clause  -- reads Becker & Hickl .sdt FLIM files (optional format)
 # matplotlib PSF/BSD-style -- the embedded decay & image plots (SpanSelector + imshow)
 # tifffile   BSD-3-Clause  -- writes the 16-bit raw TIFF export
 # PySide6    LGPL-3        -- the native Qt desktop UI (window, docks, widgets)
+#
+# Changing this file changes the launcher's venv hash, so ChronoGate.command
+# rebuilds the cached environment on the next launch (picking up scipy/sdtfile).
 #
 # PySide6 is a large wheel (~hundreds of MB). It ships abi3 wheels, so it works
 # on current CPython (incl. 3.14). The file dialogs use Qt now -- tkinter is no
@@ -12,6 +17,8 @@
 
 ptufile>=2026.6.6
 numpy>=1.24
+scipy>=1.10
+sdtfile>=2023
 matplotlib>=3.7
 tifffile>=2023.7.10
 PySide6>=6.7
