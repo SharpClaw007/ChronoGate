@@ -1,20 +1,58 @@
 # ChronoGate — plan & handoff
 
-**State at the end of the last session: v0.16.4, working tree clean,
-56 tests green (17 in `test_gating.py`, 39 in `test_ui_smoke.py`);
-the test suite runs on Windows + macOS + Linux in CI.**
+**State at the end of the last session: v0.17.0, working tree clean,
+77 tests green (19 `test_gating.py`, 10 `test_reconv.py`, 8 `test_loader_sdt.py`,
+40 `test_ui_smoke.py`); the test suite runs on Windows + macOS + Linux in CI.**
 
-Run both suites with the project venv (there is no pytest installed; the files are
-runnable directly):
+Run the suites with the project venv (no pytest installed; the files are runnable
+directly). The data-driven tests skip cleanly when the sample stack is absent
+(CI / a fresh checkout): `test_ui_smoke.py` skips wholesale, `test_gating.py`
+skips its 3 real-`.ptu` tests, `test_loader_sdt.py` skips its 1 real-`.sdt` test.
 
 ```bash
-.venv/bin/python test_gating.py
-.venv/bin/python test_ui_smoke.py
+.venv/bin/python test_gating.py       # numeric core (gating, RLD, phasor, σ)
+.venv/bin/python test_reconv.py       # IRF reconvolution engine (no data needed)
+.venv/bin/python test_loader_sdt.py   # .sdt reader mapping (no data needed)
+QT_QPA_PLATFORM=offscreen MPLBACKEND=Agg PYTHONPATH=. .venv/bin/python test_ui_smoke.py
 ```
 
-Guiding constraints, unchanged: **numpy-only** (no scipy); the analysis layer
-(`loader` / `gating` / `metrics` / `export`) stays **Qt-free and matplotlib-free**;
-every change ships with a test and a green run of both suites.
+Guiding constraints: the core analysis layer (`loader` / `gating` / `metrics` /
+`export`) stays **Qt-free and matplotlib-free**. As of v0.17 **scipy is a
+dependency**, but it is confined to `chronogate/reconv.py` (the IRF-reconvolution
+fit); `gating`/`metrics`/`export` remain numpy-only. Every change ships with a
+test and a green run.
+
+---
+
+## v0.17 — scientific hardening (M1–M4)
+
+Four milestones closing the gaps that separated ChronoGate from trustworthy
+scientific software, plus a second input format. Design spec:
+`docs/superpowers/specs/2026-07-21-scientific-hardening-design.md`.
+
+- **M1 — phasor validation.** Added the one untested phasor property: the
+  linear-combination law (a mixture's phasor is the intensity-weighted mean of
+  its component phasors, inside the semicircle). `gating.phasor` satisfies it
+  exactly. `test_gating.py::test_phasor_linear_combination`.
+- **M2 — format dispatch + `.sdt`.** `loader.READERS`/`load_flim`/`probe_flim`/
+  `flim_glob_patterns` dispatch by extension; `load_sdt` maps a Becker & Hickl
+  `.sdt` (via `sdtfile`) onto the same `FlimCube`. The controller's load workers
+  route through `load_flim`, so `.sdt` opens like `.ptu`. Validated against a
+  real 7.2 M-photon file. **`.sdt` axis gotcha:** when Y and the microtime axis
+  share a length, the *last* matching axis is the time axis (see `load_sdt`).
+- **M3 — RLD uncertainty.** Closed-form shot-noise `σ_τ = (τ²/dt)·√(1/na+1/nb)`
+  (`rld_lifetime_sigma`, `rld_region_lifetime`, `sigma_tau` in `rapid_lifetime`),
+  Monte-Carlo-validated to <10%. The one-page report shows a pooled region
+  `τ ± σ` line.
+- **M4 — IRF reconvolution (`chronogate/reconv.py`).** Rigorous IRF-deconvolved
+  lifetime: periodic (circular-convolution) forward model, measured + Gaussian
+  IRF, `scipy.optimize.least_squares` with Poisson-MLE (default) or weighted-χ²
+  residuals, per-parameter σ from the fit covariance, and a thresholded,
+  cancellable per-pixel τ-map. UI: **View ▸ IRF lifetime fit…** (`ReconvDialog`
+  → `controller._on_reconv_fit`, region single-fit or τ-map). The engine was
+  **adversarially verified** (two independent skeptic passes): the forward model
+  and mono σ held up to machine precision; the one real bug found — false-tight σ
+  on near-degenerate bi-exponentials — is fixed (see landmine).
 
 ---
 
@@ -200,6 +238,29 @@ to hide it). Hover artists carry `animated=True` so ordinary draws skip them.
 
 ## Landmines (all of these bit us; do not re-learn them)
 
+- **reconv `_param_sigma` must report NaN for an ill-conditioned `JᵀJ`.** A
+  near-degenerate bi-exponential makes `cond(JᵀJ)` ≈ 1e10–1e14; a plain
+  `np.linalg.inv` there returns *garbage* σ that is frequently a deceptively
+  **small** error bar on an unmeasurable τ (an adversarial pass caught it, 42–144×
+  too small). The fix diagonalises `JᵀJ` and NaNs directions below a relative
+  eigenvalue floor. Do **not** "repair" that NaN with `inv` or `pinv` — `pinv`
+  *under*-reports the ill-determined direction (drops its large-variance
+  eigenvector). NaN = "unidentifiable" is the honest answer.
+- **reconv assumes the microtime window is one laser period.** The forward model
+  uses **circular** (FFT) convolution; that is what makes incomplete-decay
+  wrap-around correct. Linear convolution would bias short-period τ. Verified
+  against an independent periodic-decay construction to ~1e-16.
+- **reconv default `max_tau_ns = window`.** τ longer than the acquisition window
+  is clipped to the window (you can't measure a lifetime you never see decay).
+  Pass a larger `max_tau_ns` only if you genuinely expect τ > window.
+- **scipy is imported lazily inside `reconv.py` functions.** PyInstaller's static
+  analyzer can miss deep/function-level imports; `packaging/chronogate.spec` names
+  `scipy.optimize` / `scipy.linalg` / `sdtfile` in `hiddenimports` as insurance.
+  Verify the frozen build + all 6 CI jobs after any dep change.
+- **`.sdt` time-axis ambiguity: last matching axis wins.** In a real B&H file the
+  Y dimension and the microtime dimension both had length 256; `load_sdt` picks
+  the *last* axis whose length equals `len(times)` as the time axis. Don't
+  "simplify" it to the first match.
 - **`AxesImage.set_data()` does not update the extent.** You must call
   `set_extent()` too, or the image renders into the 2×2 placeholder corner and the
   panel looks blank — and mouse picking silently maps into that corner as well.
