@@ -32,6 +32,12 @@ dependencies = [
     "PySide6>=6.7",          # the native Qt desktop UI
 ]
 
+# Build-time only -- for regenerating the SOP PDF (docs/sop/). Deliberately NOT
+# app dependencies, so the installers never bundle weasyprint/pango:
+#   pip install -e ".[docs]"
+[project.optional-dependencies]
+docs = ["markdown>=3.5", "weasyprint>=60"]
+
 [project.urls]
 Homepage = "https://github.com/SharpClaw007/ChronoGate"
 
