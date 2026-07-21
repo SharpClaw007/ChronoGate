@@ -39,7 +39,8 @@ class ReconvDialog(QDialog):
     """
 
     def __init__(self, parent=None, *, has_selection: bool = False,
-                 resolution_ns: float = 0.0, default_center_ns: float = 0.0) -> None:
+                 resolution_ns: float = 0.0, default_center_ns: float = 0.0,
+                 default_threshold: int = 100) -> None:
         super().__init__(parent)
         self.setWindowTitle("IRF lifetime fit")
 
@@ -84,9 +85,12 @@ class ReconvDialog(QDialog):
         self.cb_obj = QComboBox(); self.cb_obj.addItems(["Poisson MLE (recommended)",
                                                          "weighted χ²"])
         self.sp_thresh = QSpinBox(); self.sp_thresh.setRange(0, 10_000_000)
-        self.sp_thresh.setValue(100)
-        self.sp_thresh.setToolTip("Pixels with fewer total photons are left "
-                                  "unfitted (NaN) — this keeps a per-pixel fit tractable.")
+        self.sp_thresh.setValue(max(1, int(default_threshold)))
+        self.sp_thresh.setToolTip(
+            "Pixels with fewer total photons are left unfitted (NaN) — this keeps a "
+            "per-pixel fit tractable. The default is derived from this image's actual "
+            "per-pixel counts (so it scales with spatial binning); raise it for "
+            "cleaner fits, lower it to include dimmer pixels.")
         fform = QFormLayout()
         fform.addRow("components", self.cb_model)
         fform.addRow("objective", self.cb_obj)

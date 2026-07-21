@@ -2885,8 +2885,16 @@ class ViewerController(QObject):
         from .. import reconv
         m = self.model
         union = self._union_pick_mask()
+        # A bin-aware default photon threshold: derive it from THIS image's actual
+        # per-pixel totals (which grow with spatial binning), so the map isn't
+        # empty by default on sparse raw data. Keep the brighter ~quarter of
+        # non-empty pixels, floored so a fit still has some photons to work with.
+        totals = m.intensity
+        nz = totals[totals > 0]
+        default_thr = int(np.clip(np.percentile(nz, 75), 15, 100_000)) if nz.size else 15
         dlg = ReconvDialog(self.w, has_selection=union is not None,
-                           resolution_ns=m.resolution_ns, default_center_ns=m.t0_ns())
+                           resolution_ns=m.resolution_ns, default_center_ns=m.t0_ns(),
+                           default_threshold=default_thr)
         if dlg.exec() != QDialog.Accepted:
             return
         try:
@@ -2946,12 +2954,17 @@ class ViewerController(QObject):
         self._reconv_map = res
         finite = res["tau1"][np.isfinite(res["tau1"])]
         med = float(np.median(finite)) if finite.size else float("nan")
+        if res["n_fitted"] == 0:
+            tail = ("\n\nNo pixel reached the photon threshold. Try a lower "
+                    "threshold, more spatial binning, or a region fit on a bright "
+                    "selection.")
+        else:
+            tail = "\n\nThe τ-map is kept for this session and is included in the next export/report."
         QMessageBox.information(
             self.w, "IRF lifetime τ-map",
             f"Reconvolution τ-map ({kind}, {obj.upper()})\n\n"
             f"    fitted {res['n_fitted']:,} px (≥ {dlg.photon_threshold():g} photons)\n"
-            f"    median τ = {med:.3f} ns\n\n"
-            "Stored on the controller (self._reconv_map) for export.")
+            f"    median τ = {med:.3f} ns" + tail)
         self.statusMessage.emit(f"Reconvolution τ-map: {res['n_fitted']:,} px, "
                                 f"median τ {med:.3f} ns")
 
