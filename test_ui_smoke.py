@@ -1713,6 +1713,42 @@ def test_irf_reconv_fit_ui() -> None:
           f"τ-map plumbed ({msgs['info']} result dialogs, 0 errors).")
 
 
+def test_auto_buttons_have_reset() -> None:
+    """Every Auto button has a sibling reset-to-default (↺) control.
+
+    Each resets its value to the neutral/off default — t0 → 0 ns, noise floor → 0,
+    binning → 1× — distinct from the data-derived Auto value."""
+    w = _window()
+    c = w.controller
+
+    # A reset button sits next to each of the three Auto buttons.
+    assert w.gate.btn_t0_reset is not None
+    assert w.display.btn_floor_reset is not None
+    assert w.binning.btn_bin_reset is not None
+
+    # Move each control OFF its default via the widgets, then reset it back.
+    w.binning.bin.setValue(2)          # 2× binning
+    w.display.floor.setValue(20)       # a nonzero noise floor
+    w.gate.t0.setValue(2.0)            # manual t0 = 2 ns
+    assert c.bin_size == 2, c.bin_size
+    assert c.noise_floor_pp > 0, c.noise_floor_pp
+    assert c.model.t0_ns() > 0, c.model.t0_ns()
+
+    # Reset in this order (binning rebuilds the model + re-autos the floor, so the
+    # floor reset must come after it).
+    w.binning.btn_bin_reset.click()
+    w.display.btn_floor_reset.click()
+    w.gate.btn_t0_reset.click()
+
+    assert c.bin_size == 1 and w.binning.bin.value() == 1, "binning reset to 1×"
+    # noise_floor_pp==0 is the real "no subtraction"; the slider bottoms at its
+    # minimum (the range refit may raise that above 0).
+    assert c.noise_floor_pp == 0.0, "floor reset to 0 (no subtraction)"
+    assert w.display.floor.value() == w.display.floor.minimum(), "floor slider bottomed"
+    assert abs(c.model.t0_ns()) < 1e-9 and abs(w.gate.t0.value()) < 1e-9, "t0 reset to 0 ns"
+    print("OK: each Auto button has a ↺ reset-to-default (t0 0 ns, floor 0, binning 1×).")
+
+
 def test_no_qt_virtual_shadowing() -> None:
     """No widget attribute may shadow a Qt virtual method.
 
@@ -1819,6 +1855,7 @@ if __name__ == "__main__":
         test_restrict_export_to_selection()
         test_export_and_open_in_fiji()
         test_irf_reconv_fit_ui()
+        test_auto_buttons_have_reset()
     except AssertionError as exc:
         import traceback
         traceback.print_exc()      # a bare assert prints nothing useful otherwise

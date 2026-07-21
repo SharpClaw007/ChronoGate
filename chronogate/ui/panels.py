@@ -175,6 +175,9 @@ class SliderSpin(QWidget):
     def maximum(self):
         return self.spin.maximum()
 
+    def minimum(self):
+        return self.spin.minimum()
+
 
 class GatePanel(QGroupBox):
     def __init__(self):
@@ -197,6 +200,9 @@ class GatePanel(QGroupBox):
         self.btn_t0_auto = QPushButton("auto")
         self.btn_t0_auto.setMaximumWidth(52)
         self.btn_t0_auto.setToolTip("Reset t0 to the auto (smoothed-peak) estimate.")
+        self.btn_t0_reset = QPushButton("↺")
+        self.btn_t0_reset.setMaximumWidth(28)
+        self.btn_t0_reset.setToolTip("Reset t0 to the default (0 ns, the start of the window).")
         self.active_label = _muted("single gate")
         form = _form()
         form.addRow("start", self.spin_lo)
@@ -205,6 +211,7 @@ class GatePanel(QGroupBox):
         t0row.setSpacing(6)
         t0row.addWidget(self.t0, 1)
         t0row.addWidget(self.btn_t0_auto)
+        t0row.addWidget(self.btn_t0_reset)
         form.addRow("t0", t0row)
         lay = _col(self)
         lay.addLayout(form)
@@ -228,6 +235,9 @@ class DisplayPanel(QGroupBox):
         self.btn_floor_auto.setMaximumWidth(52)
         self.btn_floor_auto.setToolTip("Reset the noise floor to the auto value "
                                        "(just above the flat pre-pulse baseline).")
+        self.btn_floor_reset = QPushButton("↺")
+        self.btn_floor_reset.setMaximumWidth(28)
+        self.btn_floor_reset.setToolTip("Reset the noise floor to the default (0 — no subtraction).")
         self.cmap = QComboBox()
         self.cmap.addItems(INTENSITY_CMAPS)
         self.cmap.setToolTip("Colormap for the gated intensity image.")
@@ -249,6 +259,7 @@ class DisplayPanel(QGroupBox):
         floor_row.setSpacing(6)
         floor_row.addWidget(self.floor, 1)
         floor_row.addWidget(self.btn_floor_auto)
+        floor_row.addWidget(self.btn_floor_reset)
         form.addRow("noise floor", floor_row)
         form.addRow("colormap", self.cmap)
         lockrow = QHBoxLayout()
@@ -589,6 +600,9 @@ class BinningPanel(QGroupBox):
         self.target.setToolTip("Photons/pixel the Auto button aims a representative signal pixel at.")
         self.btn_auto = QPushButton("Auto")
         self.btn_auto.setToolTip("Suggest a bin factor from the photon statistics.")
+        self.btn_bin_reset = QPushButton("↺")
+        self.btn_bin_reset.setMaximumWidth(28)
+        self.btn_bin_reset.setToolTip("Reset binning to the default (1×, off).")
 
         lay = _col(self)
         lay.addWidget(_muted("Pool photons per pixel for cleaner decays/lifetimes."))
@@ -602,6 +616,7 @@ class BinningPanel(QGroupBox):
         row.addStretch(1)
         self.btn_auto.setMaximumWidth(72)
         row.addWidget(self.btn_auto)
+        row.addWidget(self.btn_bin_reset)
         lay.addLayout(row)
 
 

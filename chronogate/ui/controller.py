@@ -436,11 +436,13 @@ class ViewerController(QObject):
         w.display.floor.valueChanged.connect(self._on_noise_floor)
         w.display.cmap.currentTextChanged.connect(self._on_cmap)
         w.display.btn_floor_auto.clicked.connect(self._on_floor_auto)
+        w.display.btn_floor_reset.clicked.connect(self._on_floor_reset)
         w.display.lock.toggled.connect(self._on_lock_scale)
         w.display.vmin.valueChanged.connect(self._on_manual_clim)
         w.display.vmax.valueChanged.connect(self._on_manual_clim)
         w.gate.t0.valueChanged.connect(self._on_t0)
         w.gate.btn_t0_auto.clicked.connect(self._on_t0_auto)
+        w.gate.btn_t0_reset.clicked.connect(self._on_t0_reset)
         w.lifetime.radio_a.toggled.connect(self._on_edit_radio)
         w.lifetime.min_cts.valueChanged.connect(self._on_min_counts)
         w.lifetime.cmap_life.currentTextChanged.connect(self._on_lifetime_cmap)
@@ -466,6 +468,7 @@ class ViewerController(QObject):
         w.binning.bin.valueChanged.connect(self._on_bin_size)
         w.binning.target.valueChanged.connect(self._on_bin_target)
         w.binning.btn_auto.clicked.connect(self._on_auto_bin)
+        w.binning.btn_bin_reset.clicked.connect(self._on_bin_reset)
         w.filep.z.valueChanged.connect(self._on_zslice)
         w.filep.channel.currentIndexChanged.connect(self._on_channel)
         w.filep.btn_open.clicked.connect(self._on_open_file)
@@ -2108,6 +2111,21 @@ class ViewerController(QObject):
         self._refresh_decay()
         self._refresh_image()
 
+    def _on_floor_reset(self) -> None:
+        """Reset the noise floor to the neutral default (0 -- no subtraction).
+
+        ``noise_floor_pp`` (what is actually subtracted) goes to 0; the slider is
+        bottomed out at its minimum, which the range-refit may have raised above 0.
+        """
+        if self.model is None:
+            return
+        self.noise_floor_pp = 0.0
+        if self.w is not None:
+            with _blocked(self.w.display.floor):
+                self.w.display.floor.setValue(self.w.display.floor.minimum())
+        self._refresh_decay()
+        self._refresh_image()
+
     def _on_noise_floor(self, val) -> None:
         # The slider is in summed-decay units; store it per pixel for subtraction.
         self.noise_floor_pp = float(val) / max(1, self.model.n_pixels)
@@ -2143,6 +2161,17 @@ class ViewerController(QObject):
 
     def _on_bin_target(self, val) -> None:
         self.bin_target = max(1, int(val))
+
+    def _on_bin_reset(self) -> None:
+        """Reset spatial binning to the neutral default (1x, off)."""
+        if self.model is None:
+            return
+        self.bin_size = 1
+        if self.w is not None:
+            with _blocked(self.w.binning.bin):
+                self.w.binning.bin.setValue(1)
+        self._rebuild_binned_model()
+        self.statusMessage.emit("Binning reset to 1×1 (off).")
 
     def _on_auto_bin(self) -> None:
         b, n0 = gating.suggest_bin_factor(
@@ -2221,6 +2250,18 @@ class ViewerController(QObject):
         if self.w is not None:
             with _blocked(self.w.gate.t0):
                 self.w.gate.t0.setValue(self.model.t0_ns())
+        self._refresh_decay()
+        self._refresh_image()
+
+    def _on_t0_reset(self) -> None:
+        """Reset t0 to the neutral default (0 ns, the start of the window)."""
+        if self.model is None:
+            return
+        self.manual_t0_ns = 0.0
+        self.model.set_t0(0)
+        if self.w is not None:
+            with _blocked(self.w.gate.t0):
+                self.w.gate.t0.setValue(0.0)
         self._refresh_decay()
         self._refresh_image()
 
