@@ -430,6 +430,48 @@ def test_phasor_second_harmonic():
     print(f"OK: harmonic 2 phasor lands at its ω₂ position (g={g2[0,0]:.3f}).")
 
 
+def test_phasor_linear_combination():
+    """The defining phasor law: a mixture's phasor is the intensity-weighted mean
+    of its components' phasors. For a two-component decay D = D1 + D2 the phasor
+    numerator (Σ D·cos, Σ D·sin) and the denominator (Σ D) are each additive, so
+    g_mix = (T1·g1 + T2·g2)/(T1+T2) *exactly* (Ti = Σ Di). The mixture therefore
+    sits on the straight chord between its two component points, strictly inside
+    the universal semicircle -- the algebraic identity that makes phasors add."""
+    n, period_bins = 1024, 1024.0
+    t = np.arange(n)
+    tau1, tau2 = 40.0, 200.0          # two distinct lifetimes -> two spots
+    a1, a2 = 1.0, 0.5                 # unequal amplitudes -> off-centre mixture
+    d1 = a1 * np.exp(-t / tau1)
+    d2 = a2 * np.exp(-t / tau2)
+
+    cube1 = np.broadcast_to(d1, (2, 2, n)).astype(np.float64).copy()
+    cube2 = np.broadcast_to(d2, (2, 2, n)).astype(np.float64).copy()
+    cube_sum = cube1 + cube2          # per-pixel sum of the two components
+
+    # Component photon totals and each component's own phasor.
+    T1, T2 = float(d1.sum()), float(d2.sum())
+    g1, s1 = gating.phasor(cube1, period_bins, t0_bin=0.0)
+    g2, s2 = gating.phasor(cube2, period_bins, t0_bin=0.0)
+    gsum, ssum = gating.phasor(cube_sum, period_bins, t0_bin=0.0)
+    g1, s1, g2, s2, gm, sm = (g1[0, 0], s1[0, 0], g2[0, 0], s2[0, 0],
+                              gsum[0, 0], ssum[0, 0])
+
+    # 1) The linear-combination law, exact to floating point (not a fit tolerance).
+    assert abs(gm - (T1 * g1 + T2 * g2) / (T1 + T2)) < 1e-9, gm
+    assert abs(sm - (T1 * s1 + T2 * s2) / (T1 + T2)) < 1e-9, sm
+
+    # 2) A genuine two-component mixture lands strictly INSIDE the semicircle.
+    assert (gm - 0.5) ** 2 + sm ** 2 < 0.25 - 1e-6, (gm, sm)
+
+    # 3) ...and is collinear with its two (on-circle) component phasors: it lies
+    #    on the chord, so the cross product about (g1, s1) vanishes.
+    cross = (g2 - g1) * (sm - s1) - (s2 - s1) * (gm - g1)
+    assert abs(cross) < 1e-9, cross
+
+    print(f"OK: phasor linear-combination law holds exactly "
+          f"(g_mix={gm:.3f}, s_mix={sm:.3f}, on the chord, inside the circle).")
+
+
 def test_mask_stats_aggregates_selection():
     """Aggregate statistics (mean/median/std/valid-n) of metrics over a mask."""
     from chronogate import metrics
@@ -691,6 +733,44 @@ def test_fiji_macro_and_command():
     print("OK: Fiji macro (open+range+ROI+LUT-last) and launcher resolution (unix + windows).")
 
 
+def test_rld_sigma_matches_monte_carlo() -> None:
+    """The analytic shot-noise σ_τ must match a Monte-Carlo of Poisson replicates.
+
+    For several (τ, dt, photon-budget) points, draw many Poisson realisations of
+    the two gated counts, form the RLD τ for each, and compare the empirical
+    scatter of τ to the closed-form ``rld_lifetime_sigma`` (evaluated at the mean
+    counts). First-order error propagation must agree with the MC to ~10% where
+    counts are ample -- that agreement is the evidence the formula is right.
+    """
+    rng = np.random.default_rng(0)
+    dt = 1.5                                   # gate-start separation, ns
+    for tau_true, na_mean in ((2.5, 8000.0), (2.5, 3000.0), (1.2, 6000.0)):
+        nb_mean = na_mean * np.exp(-dt / tau_true)          # exact geometric ratio
+        analytic = float(gating.rld_lifetime_sigma(na_mean, nb_mean, dt, tau=tau_true))
+        na = rng.poisson(na_mean, size=20000).astype(np.float64)
+        nb = rng.poisson(nb_mean, size=20000).astype(np.float64)
+        taus = gating.rld_lifetime(na, nb, dt)
+        taus = taus[np.isfinite(taus)]
+        emp = float(np.std(taus))
+        rel = abs(emp - analytic) / analytic
+        assert rel < 0.10, (tau_true, na_mean, analytic, emp, rel)
+        # mean of the MC τ sits at the truth (estimator ~unbiased at these counts)
+        assert abs(float(np.mean(taus)) - tau_true) / tau_true < 0.02
+
+    # σ shrinks as photons grow (∝ 1/sqrt(counts)); and follows NaN of τ.
+    s_lo = float(gating.rld_lifetime_sigma(1000.0, 600.0, dt))
+    s_hi = float(gating.rld_lifetime_sigma(9000.0, 5400.0, dt))
+    assert s_hi < s_lo, (s_lo, s_hi)
+    assert np.isnan(gating.rld_lifetime_sigma(50.0, 60.0, dt))   # na<=nb -> τ NaN -> σ NaN
+
+    # region pooling: σ over a bright selection is smaller than any single pixel.
+    na_map = np.full((4, 4), 400.0); nb_map = np.full((4, 4), 400.0 * np.exp(-dt / 2.5))
+    _, s_pix = 0.0, float(gating.rld_lifetime_sigma(400.0, 400.0 * np.exp(-dt / 2.5), dt))
+    tau_r, s_reg = gating.rld_region_lifetime(na_map, nb_map, dt)
+    assert abs(tau_r - 2.5) / 2.5 < 0.05 and s_reg < s_pix
+    print("OK: RLD σ_τ matches Monte-Carlo to <10%, shrinks with counts, pools over a region.")
+
+
 if __name__ == "__main__":
     # A few tests exercise the real ptufile decode path against the example
     # stack; that data is large and not version-controlled, so on CI / a fresh
@@ -712,6 +792,8 @@ if __name__ == "__main__":
         test_metrics_rank_filters_and_sorts,
         test_phasor_calibration_recovers_true_position,
         test_phasor_second_harmonic,
+        test_phasor_linear_combination,
+        test_rld_sigma_matches_monte_carlo,
         test_mask_stats_aggregates_selection,
         test_one_page_report_export,
         test_frozen_app_skips_rosetta_reexec,

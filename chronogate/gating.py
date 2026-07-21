@@ -170,6 +170,59 @@ def rld_lifetime(
     return np.where(valid, tau, np.nan)
 
 
+def rld_lifetime_sigma(
+    na: np.ndarray, nb: np.ndarray, dt_ns: float,
+    tau: np.ndarray | None = None, min_counts: float = 0.0
+) -> np.ndarray:
+    """Shot-noise (Poisson) 1σ uncertainty on the two-gate RLD lifetime.
+
+    With ``τ = dt / ln(na/nb)`` and independent Poisson counts (``Var(na)=na``,
+    ``Var(nb)=nb``), first-order error propagation gives
+
+        ∂τ/∂na = −dt / (L²·na),  ∂τ/∂nb = +dt / (L²·nb),   L = ln(na/nb),
+
+    so   σ_τ = (dt / L²)·sqrt(1/na + 1/nb) = (τ² / dt)·sqrt(1/na + 1/nb).
+
+    Returns σ_τ per pixel (ns), **NaN** wherever ``rld_lifetime`` itself is NaN
+    (too few photons, no decay, or ``dt ≤ 0``).
+
+    Caveat: this uses the shot noise on the **raw gated counts**; it neglects the
+    (usually small) added variance from background subtraction. ``na``/``nb`` here
+    should be the gated photon sums used for the τ estimate.
+    """
+    na = np.asarray(na, dtype=np.float64)
+    nb = np.asarray(nb, dtype=np.float64)
+    if tau is None:
+        tau = rld_lifetime(na, nb, dt_ns, min_counts=min_counts)
+    tau = np.asarray(tau, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sigma = (tau * tau / dt_ns) * np.sqrt(1.0 / na + 1.0 / nb)
+    return np.where(np.isfinite(tau), sigma, np.nan)
+
+
+def rld_region_lifetime(
+    na: np.ndarray, nb: np.ndarray, dt_ns: float,
+    mask: np.ndarray | None = None, min_counts: float = 0.0
+) -> tuple[float, float]:
+    """Aggregate RLD lifetime ``τ ± σ`` (ns) over a region.
+
+    Photons are **pooled** over the selected pixels (``mask`` True, or all pixels
+    if ``mask`` is None) *before* taking the ratio -- so the region estimate has
+    the full region's photon statistics, and its σ shrinks with region size.
+    Returns ``(nan, nan)`` if the pooled gates carry no measurable decay.
+    """
+    na = np.asarray(na, dtype=np.float64)
+    nb = np.asarray(nb, dtype=np.float64)
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        na_sum = float(na[m].sum()); nb_sum = float(nb[m].sum())
+    else:
+        na_sum = float(na.sum()); nb_sum = float(nb.sum())
+    tau = float(rld_lifetime(na_sum, nb_sum, dt_ns, min_counts=min_counts))
+    sigma = float(rld_lifetime_sigma(na_sum, nb_sum, dt_ns, tau=tau, min_counts=min_counts))
+    return tau, sigma
+
+
 def fit_mono_exponential(
     t_ns: np.ndarray, decay: np.ndarray, t0_ns: float, baseline: float = 0.0
 ) -> tuple[float, float] | None:
@@ -546,8 +599,10 @@ class GatingModel:
         nb = np.asarray(self.gate(blo, bhi, floor_per_bin), dtype=np.float64)
         dt_ns = (blo - alo) * self.resolution_ns
         tau = rld_lifetime(na, nb, dt_ns, min_counts=min_counts)
+        sigma_tau = rld_lifetime_sigma(na, nb, dt_ns, tau=tau, min_counts=min_counts)
         return {
             "tau": tau,
+            "sigma_tau": sigma_tau,      # per-pixel shot-noise 1σ on tau (ns), NaN where tau is
             "na": na,
             "nb": nb,
             "dt_ns": dt_ns,
