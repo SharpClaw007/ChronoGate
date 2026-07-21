@@ -4,15 +4,21 @@
 # -------------------------------------------------
 # On Apple Silicon it runs the app with a NATIVE arm64 Python (Homebrew's by
 # default) rather than an x86-64 interpreter under Rosetta -- the Qt GUI is much
-# more stable that way. It uses a cached environment keyed to requirements.txt
+# more stable that way. It uses a cached environment keyed to pyproject.toml
 # AND the architecture, so the first launch installs the dependencies (the Qt
 # wheel is large) and every launch afterwards is instant.
+#
+# pyproject.toml is the SINGLE source of dependencies (there is no
+# requirements.txt). The venv is an editable install (`pip install -e .`), and
+# its cache key is a hash of pyproject.toml -- so changing *any* dependency (or
+# the pinned python) rebuilds the environment on the next launch automatically.
+# This is what prevents a stale cached venv from crashing after a dep is added.
 #
 #   * Interpreter: a native arm64 python3 on Apple Silicon (auto-detected:
 #     /opt/homebrew/bin/python3, then Homebrew versioned, then a universal
 #     /usr/bin/python3). Override with CHRONOGATE_PYTHON.
 #   * Environment dir: ".run-venv-<arch>-<hash>"; rebuilt if the architecture or
-#     requirements change, stale ones pruned.
+#     any dependency changes, stale ones pruned.
 #   * Always kept: your data (3_FLIM_stack_ptu, Samples.sptw) and exports.
 #
 # Usage:  double-click in Finder, OR:  ./ChronoGate.command [optional_file.ptu]
@@ -61,10 +67,12 @@ else
 fi
 echo "Interpreter: $PYTHON  ($("$PYTHON" -c 'import platform,sys;print(platform.machine(),"· Python",sys.version.split()[0])'))"
 
-# --- Cached environment, keyed to (architecture, requirements). ---
-REQ_HASH="$(shasum -a 256 "$HERE/requirements.txt" | cut -c1-12)"
+# --- Cached environment, keyed to (architecture, dependencies). ---
+# Hash pyproject.toml -- the single dependency source -- so any dep change yields
+# a new venv name and an automatic rebuild (no stale-environment crashes).
+DEP_HASH="$(shasum -a 256 "$HERE/pyproject.toml" | cut -c1-12)"
 ARCH_TAG="$("$PYTHON" -c 'import platform;print(platform.machine())')"
-VENV="$HERE/.run-venv-$ARCH_TAG-$REQ_HASH"
+VENV="$HERE/.run-venv-$ARCH_TAG-$DEP_HASH"
 
 for d in "$HERE"/.run-venv*; do
     if [ -e "$d" ] && [ "$d" != "$VENV" ]; then
@@ -79,7 +87,7 @@ if [ ! -f "$VENV/.installed" ]; then
     rm -rf "$VENV"
     "$PYTHON" -m venv "$VENV"
     "$VENV/bin/pip" install --quiet --upgrade pip
-    "$VENV/bin/pip" install -r "$HERE/requirements.txt"
+    "$VENV/bin/pip" install -e "$HERE"          # deps come from pyproject.toml
     touch "$VENV/.installed"
 else
     echo "Using cached environment: $(basename "$VENV")"

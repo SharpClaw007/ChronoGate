@@ -18,14 +18,18 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
+# The single source of dependencies (the .app launcher installs `-e .` from here;
+# there is no requirements.txt). All licences are permissive (BSD / MIT / PSF /
+# LGPL), no GPL: ptufile/numpy/scipy/sdtfile/tifffile BSD-3, matplotlib PSF/BSD,
+# PySide6 LGPL-3.
 dependencies = [
-    "ptufile>=2026.6.6",
-    "sdtfile>=2023",
-    "numpy>=1.24",
-    "scipy>=1.10",
-    "matplotlib>=3.7",
-    "tifffile>=2023.7.10",
-    "PySide6>=6.7",
+    "ptufile>=2026.6.6",     # reads PicoQuant .ptu TTTR files (primary format)
+    "sdtfile>=2023",         # reads Becker & Hickl .sdt FLIM files (optional)
+    "numpy>=1.24",           # the cube, prefix sum, all numerics
+    "scipy>=1.10",           # least_squares for the IRF-reconvolution fit
+    "matplotlib>=3.7",       # embedded decay & image plots
+    "tifffile>=2023.7.10",   # 16-bit raw TIFF export
+    "PySide6>=6.7",          # the native Qt desktop UI
 ]
 
 [project.urls]
