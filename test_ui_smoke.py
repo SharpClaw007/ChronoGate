@@ -1714,7 +1714,7 @@ def test_irf_reconv_fit_ui() -> None:
 
 
 def test_auto_buttons_have_reset() -> None:
-    """Every Auto button has a sibling reset-to-default (↺) control.
+    """Every Auto button has a sibling reset-to-default control.
 
     Each resets its value to the neutral/off default — t0 → 0 ns, noise floor → 0,
     binning → 1× — distinct from the data-derived Auto value."""
@@ -1746,7 +1746,7 @@ def test_auto_buttons_have_reset() -> None:
     assert c.noise_floor_pp == 0.0, "floor reset to 0 (no subtraction)"
     assert w.display.floor.value() == w.display.floor.minimum(), "floor slider bottomed"
     assert abs(c.model.t0_ns()) < 1e-9 and abs(w.gate.t0.value()) < 1e-9, "t0 reset to 0 ns"
-    print("OK: each Auto button has a ↺ reset-to-default (t0 0 ns, floor 0, binning 1×).")
+    print("OK: each Auto button has a reset-to-default (t0 0 ns, floor 0, binning 1×).")
 
 
 def test_no_qt_virtual_shadowing() -> None:

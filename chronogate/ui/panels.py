@@ -17,8 +17,26 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QRadioButton,
-    QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QStyle, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
+
+
+def _reset_button(tooltip: str) -> QPushButton:
+    """A small 'reset to default' button.
+
+    Uses the style's standard reload icon (a rendered pixmap, not a font glyph),
+    so it can't degrade to a tofu box the way a unicode ↺ does on fonts that lack
+    the codepoint. Falls back to a plain-ASCII label if no icon is available.
+    """
+    btn = QPushButton()
+    btn.setMaximumWidth(30)
+    icon = btn.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+    if icon.isNull():
+        btn.setText("R")            # last-resort ASCII fallback, always renders
+    else:
+        btn.setIcon(icon)
+    btn.setToolTip(tooltip)
+    return btn
 
 INTENSITY_CMAPS = ["viridis", "gray", "magma", "inferno", "cividis"]
 LIFETIME_CMAPS = ["turbo", "viridis", "plasma", "inferno", "cividis"]
@@ -200,9 +218,7 @@ class GatePanel(QGroupBox):
         self.btn_t0_auto = QPushButton("auto")
         self.btn_t0_auto.setMaximumWidth(52)
         self.btn_t0_auto.setToolTip("Reset t0 to the auto (smoothed-peak) estimate.")
-        self.btn_t0_reset = QPushButton("↺")
-        self.btn_t0_reset.setMaximumWidth(28)
-        self.btn_t0_reset.setToolTip("Reset t0 to the default (0 ns, the start of the window).")
+        self.btn_t0_reset = _reset_button("Reset t0 to the default (0 ns, the start of the window).")
         self.active_label = _muted("single gate")
         form = _form()
         form.addRow("start", self.spin_lo)
@@ -235,9 +251,7 @@ class DisplayPanel(QGroupBox):
         self.btn_floor_auto.setMaximumWidth(52)
         self.btn_floor_auto.setToolTip("Reset the noise floor to the auto value "
                                        "(just above the flat pre-pulse baseline).")
-        self.btn_floor_reset = QPushButton("↺")
-        self.btn_floor_reset.setMaximumWidth(28)
-        self.btn_floor_reset.setToolTip("Reset the noise floor to the default (0 — no subtraction).")
+        self.btn_floor_reset = _reset_button("Reset the noise floor to the default (0 — no subtraction).")
         self.cmap = QComboBox()
         self.cmap.addItems(INTENSITY_CMAPS)
         self.cmap.setToolTip("Colormap for the gated intensity image.")
@@ -600,9 +614,7 @@ class BinningPanel(QGroupBox):
         self.target.setToolTip("Photons/pixel the Auto button aims a representative signal pixel at.")
         self.btn_auto = QPushButton("Auto")
         self.btn_auto.setToolTip("Suggest a bin factor from the photon statistics.")
-        self.btn_bin_reset = QPushButton("↺")
-        self.btn_bin_reset.setMaximumWidth(28)
-        self.btn_bin_reset.setToolTip("Reset binning to the default (1×, off).")
+        self.btn_bin_reset = _reset_button("Reset binning to the default (1×, off).")
 
         lay = _col(self)
         lay.addWidget(_muted("Pool photons per pixel for cleaner decays/lifetimes."))
