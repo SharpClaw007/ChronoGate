@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .loader import UnsupportedFileError
+from .loader import UnsupportedFileError, flim_glob_patterns
 
 # Where the example z-stack lives, used as the file-dialog default.
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "3_FLIM_stack_ptu"
@@ -76,9 +76,12 @@ def _reexec_native_arm64() -> None:
         pass
 
 
-def _first_ptu_under(directory: Path) -> Path | None:
-    matches = sorted(directory.rglob("*.ptu"))
-    return matches[0] if matches else None
+def _first_flim_under(directory: Path) -> Path | None:
+    """First readable FLIM file under a directory, across every registered format."""
+    matches: list[Path] = []
+    for pattern in flim_glob_patterns():
+        matches.extend(directory.rglob(pattern))
+    return sorted(matches)[0] if matches else None
 
 
 def _resolve_path(arg: str | None) -> Path | None:
@@ -87,7 +90,7 @@ def _resolve_path(arg: str | None) -> Path | None:
         return None
     p = Path(arg)
     if p.is_dir():
-        return _first_ptu_under(p)
+        return _first_flim_under(p)
     return p
 
 
@@ -100,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Interactive time-gating viewer for PicoQuant FLIM (.ptu) data.",
     )
     parser.add_argument(
-        "path", nargs="?", help="A .ptu file, or a folder to search (omit for a file picker)."
+        "path", nargs="?",
+        help="A FLIM file (.ptu/.sdt), or a folder to search (omit for a file picker).",
     )
     parser.add_argument("--channel", type=int, default=0, help="Detector channel (default 0).")
     parser.add_argument(
@@ -118,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
 
     path = _resolve_path(args.path)
     if args.path and path is None:
-        print(f"No .ptu file found under: {args.path}", file=sys.stderr)
+        print(f"No FLIM file found under: {args.path}", file=sys.stderr)
         return 2
     if path is not None and not path.exists():
         print(f"File not found: {path}", file=sys.stderr)
