@@ -206,6 +206,48 @@ def test_bi_exponential_recovers_two_lifetimes():
           f"(truth {tau1_ns}, {tau2_ns}).")
 
 
+def test_near_degenerate_biexp_reports_nan_sigma():
+    """A near-unidentifiable bi-exponential must report σ=NaN, not false confidence.
+
+    When the two lifetimes nearly coincide, JᵀJ is numerically singular and a
+    naive covariance yields a deceptively *small* σ. The conditioning-aware
+    ``_param_sigma`` must instead report NaN for the unidentifiable τ across noise
+    realisations -- honestly signalling "cannot determine" rather than a tight,
+    wrong error bar. (A cleanly separated bi-exp still reports finite σ.)
+    """
+    n, dt = 400, 0.05
+    kernel_irf = reconv.IRF.gaussian(0.4, 0.25, n, dt)
+    kernel = kernel_irf.kernel(n, dt)
+    rng = np.random.default_rng(3)
+
+    # Near-degenerate: τ = 2.00 and 1.98 ns (barely separable).
+    clean = np.clip(_periodic_measured_decay(kernel, 2.00 / dt, n, amp=3000.0)
+                    + _periodic_measured_decay(kernel, 1.98 / dt, n, amp=3000.0), 0.0, None)
+    nan_frac = 0
+    trials = 20
+    for _ in range(trials):
+        y = rng.poisson(clean).astype(float)
+        fr = reconv.fit_decay(y, kernel_irf, dt, model="bi", objective="mle",
+                              seed_tau_ns=2.0)
+        # The reported σ on the (near-degenerate) principal τ must NOT be a
+        # confidently tiny number; NaN is the honest answer here.
+        if not np.isfinite(fr.sigma_tau_ns[0]) or fr.sigma_tau_ns[0] > 0.5:
+            nan_frac += 1
+    _assert(nan_frac >= int(0.7 * trials),
+            f"near-degenerate bi-exp reported falsely-tight σ in "
+            f"{trials - nan_frac}/{trials} trials")
+
+    # A well-separated bi-exp is identifiable -> finite, sensible σ.
+    clean2 = np.clip(_periodic_measured_decay(kernel, 4.0 / dt, n, amp=6000.0)
+                     + _periodic_measured_decay(kernel, 0.8 / dt, n, amp=6000.0), 0.0, None)
+    y2 = rng.poisson(clean2).astype(float)
+    fr2 = reconv.fit_decay(y2, kernel_irf, dt, model="bi", objective="mle", seed_tau_ns=2.0)
+    _assert(np.all(np.isfinite(fr2.sigma_tau_ns)) and np.all(fr2.sigma_tau_ns < 1.0),
+            f"separated bi-exp should report finite σ, got {fr2.sigma_tau_ns}")
+    print(f"OK: near-degenerate bi-exp reports σ=NaN/huge in {nan_frac}/{trials} trials "
+          f"(no false confidence); separated bi-exp keeps finite σ {fr2.sigma_tau_ns}.")
+
+
 def test_irf_shift_is_fit():
     """A timing offset between IRF and decay is absorbed by the shift param."""
     n, dt = 400, 0.05
@@ -273,6 +315,7 @@ if __name__ == "__main__":
         test_poisson_noise_bias_and_reported_sigma,
         test_reduced_chi2_near_one_on_correct_model,
         test_bi_exponential_recovers_two_lifetimes,
+        test_near_degenerate_biexp_reports_nan_sigma,
         test_irf_shift_is_fit,
         test_fit_map_thresholds_and_recovers,
         test_cancel_stops_the_map_early,

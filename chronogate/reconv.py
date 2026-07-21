@@ -180,7 +180,10 @@ def reduced_chi_square(y: np.ndarray, mu: np.ndarray, n_params: int) -> float:
     """Pearson reduced χ² = Σ (y-μ)²/max(μ,1) / (n_bins - n_params).
 
     Reported as goodness-of-fit regardless of the fitting objective; ≈ 1 for a
-    correct model on Poisson data.
+    correct model on Poisson data. The ``max(μ,1)`` clip stabilises the classic
+    Pearson blow-up when many bins have μ<1, at the cost of pulling the reported
+    value a few percent low in very low-count regimes -- so read it as a
+    clip-stabilised (slightly conservative) Pearson statistic, not a bare χ².
     """
     mu = np.clip(mu, 1.0, None)
     chi2 = float(np.sum((y - mu) ** 2 / mu))
@@ -224,18 +227,39 @@ class FitResult:
         return w / s if s else w * np.nan
 
 
+# Any eigen-direction of JᵀJ this many times weaker than the strongest is treated
+# as unidentifiable: its parameter variance is enormous (→ ∞ at exact degeneracy),
+# so we report NaN rather than a numerically-garbage, often deceptively *small* σ.
+# (A plain ``np.linalg.inv`` at cond≈1e12 returns meaningless values; ``pinv``
+# would be worse -- it drops the ill-determined direction and *under*-reports it.)
+_SIGMA_COND_FLOOR = 1e-9
+
+
 def _param_sigma(res, n_params: int) -> np.ndarray:
-    """Per-parameter 1σ from the least_squares Jacobian: sqrt(diag((JᵀJ)⁻¹)).
+    """Per-parameter 1σ from the least_squares Jacobian, conditioning-aware.
 
     For the Poisson-deviance / weighted-χ² residuals used here the residuals are
-    ~unit-variance at the optimum, so (JᵀJ)⁻¹ is the parameter covariance. Returns
-    NaNs if the Jacobian is singular (an ill-constrained fit).
+    ~unit-variance at the optimum, so ``(JᵀJ)⁻¹`` is the parameter covariance and
+    ``sqrt(diag)`` its 1σ (verified well-calibrated for a well-posed fit across a
+    500× photon range). But near-degenerate models (e.g. a bi-exponential whose
+    two lifetimes nearly coincide) make ``JᵀJ`` numerically singular, where a
+    naive inverse yields a **false, often too-small** σ. We diagonalise ``JᵀJ``
+    and, when an eigenvalue falls below ``_SIGMA_COND_FLOOR × λ_max``, treat that
+    direction as having infinite variance -- so every parameter projecting onto it
+    is honestly reported as **NaN** (unidentifiable) instead of confidently wrong.
     """
     try:
         J = np.asarray(res.jac, dtype=np.float64)
         JTJ = J.T @ J
-        cov = np.linalg.inv(JTJ)
-        return np.sqrt(np.clip(np.diag(cov), 0.0, None))
+        w, V = np.linalg.eigh(JTJ)                 # symmetric PSD -> real eigenpairs
+        wmax = float(w.max()) if w.size else 0.0
+        if not np.isfinite(wmax) or wmax <= 0:
+            return np.full(JTJ.shape[0], np.nan)
+        floor = wmax * _SIGMA_COND_FLOOR
+        inv_w = np.where(w > floor, 1.0 / w, np.inf)   # ill-conditioned -> ∞ variance
+        cov_diag = (V ** 2) @ inv_w                     # diag(V·diag(inv_w)·Vᵀ)
+        sigma = np.sqrt(cov_diag)                       # ∞ where unidentifiable
+        return np.where(np.isfinite(sigma), sigma, np.nan)
     except (np.linalg.LinAlgError, ValueError):
         return np.full(n_params, np.nan)
 
