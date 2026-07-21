@@ -18,9 +18,20 @@ chronogate_exports/
 *_gated_color.png
 *_provenance.json
 
-# Large raw data (kept local, not version-controlled)
+# Large raw data / instrument scans (GB-scale; kept local, never version-controlled).
+# Match by extension anywhere in the tree so a sample dropped in any folder — or a
+# downloaded validation file — can never be committed by accident.
 3_FLIM_stack_ptu/
 *.sptw/
+*.ptu
+*.sdt
+*.phu
+*.spc
+*.pt3
+*.ptw
+# Report/export rasters and per-pixel tables can also be large.
+*_selection_mask.tif
+*_pixels.csv
 
 # App-bundle launch log
 .chronogate-launch.log
