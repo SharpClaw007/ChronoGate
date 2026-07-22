@@ -52,9 +52,13 @@ python -m chronogate path/to/file.sdt
 > `scipy` is missing, your environment predates those dependencies — relaunch so
 > the launcher rebuilds it, or run `pip install -e .`.
 
+> **macOS keys:** shortcuts written `Ctrl+…` in this guide appear as **⌘
+> (Command)** on a Mac — e.g. `⌘O` to open, `⌘E` to export, `⌘R` for the report.
+> The single-letter mode keys (`I`, `T`, `P`) are the same on every platform.
+
 # 4. Opening data
 
-- **File ▸ Open** (`Ctrl+O`) — choose a `.ptu` or `.sdt` file.
+- **File ▸ Open .ptu…** (`Ctrl+O`) — choose a `.ptu` or `.sdt` file.
 - **File ▸ Open folder (stack)** — load a numbered z-series (e.g.
   `FLIM_stack_z1.ptu … z65.ptu`); step through planes with the **z-slice**
   slider in the File panel.
@@ -64,7 +68,7 @@ python -m chronogate path/to/file.sdt
 
 ![Workspace overview](img/overview.png)
 
-**Figure 2.** The main window. **1** File/layer (open, z-slice, channel, export,
+**Figure 2.** The main window. **1** File / layer (open, z-slice, channel, export,
 settings). **2** Gate (start, end, t0). **3** Display (threshold, noise floor,
 colormap, scale lock). **4** Binning. **5** Lifetime (RLD) controls. **6**
 Per-pixel decay / selection tools. The left plot is the summed decay with the
@@ -112,7 +116,7 @@ floor (counts, read on the summed decay), **3** floor *auto* (robust baseline),
 {: .caption}
 
 FLIM pixels are often photon-starved. Binning pools each pixel's neighbourhood
-(`b×b`) for cleaner decays and lifetimes. Click **Auto** to reach the target
+(`B×B`) for cleaner decays and lifetimes. Click **Auto** to reach the target
 photon budget, or set the factor by hand. **reset** (↻) returns to 1× (off).
 
 > Binning is the fastest way to make a per-pixel lifetime *map* usable on sparse
@@ -193,8 +197,8 @@ one-page report (PNG+PDF with the headline number, decay, image and provenance),
 - **File ▸ Export** (`Ctrl+E`) — choose artefacts (raw TIFF, colormapped PNG,
   decay CSV, per-pixel table, selection files) and a folder. A content-hashed
   **provenance JSON** is always written.
-- **File ▸ Export report** (`Ctrl+R`) — the one-page summary; in Lifetime mode it
-  includes the pooled **τ ± σ** for the selection.
+- **File ▸ Export report (one-pager)…** (`Ctrl+R`) — the one-page summary; in
+  Lifetime mode it includes the pooled **τ ± σ** for the selection.
 - **Restrict to selection** masks everything outside the selected pixels.
 - **Export & open in Fiji** writes a raw TIFF plus an ImageJ macro (range, LUT,
   ROI) and launches Fiji on it (set the Fiji path in Preferences first).
@@ -212,8 +216,8 @@ one-page report (PNG+PDF with the headline number, decay, image and provenance),
 
 # 14. Revision history
 
-The SOP is regenerated from the app: edit `docs/sop/sop.md` and
-`docs/sop/figures.py`, then run `python docs/sop/build.py`.
+This SOP is generated from the ChronoGate source and refreshed with each release,
+so its screenshots and instructions track the current version.
 
 | Version | Date | Notes |
 |---|---|---|
