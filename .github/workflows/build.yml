@@ -65,6 +65,14 @@ jobs:
       - name: Freeze (PyInstaller .app)
         run: pyinstaller packaging/chronogate.spec --noconfirm
 
+      - name: Ad-hoc code sign (free; lets an unsigned arm64 app launch)
+        # An ad-hoc signature ("-") costs nothing and is not notarization, but it
+        # stops the "damaged and can't be opened" hard-fail on Apple Silicon. The
+        # user still clears a one-time Gatekeeper warning (see the release notes).
+        run: |
+          codesign --force --deep --sign - dist/ChronoGate.app
+          codesign --verify --verbose dist/ChronoGate.app
+
       - name: Build disk image
         run: packaging/make_dmg.sh ${{ steps.ver.outputs.version }}
 
@@ -82,9 +90,19 @@ jobs:
     permissions:
       contents: write        # required to create the release
     steps:
+      - uses: actions/checkout@v4      # for .github/release-install-notes.md
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts     # each artifact lands in artifacts/<name>/
+
+      - name: Build release notes (install/bypass steps + auto changelog)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${GITHUB_REF_NAME}" --jq .body > changelog.md || echo "" > changelog.md
+          cat .github/release-install-notes.md changelog.md > notes.md
 
       - name: Publish release
         env:
@@ -93,6 +111,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "ChronoGate ${GITHUB_REF_NAME}" \
-            --generate-notes \
+            --notes-file notes.md \
             artifacts/*/ChronoGate-*.exe \
             artifacts/*/ChronoGate-*.dmg
