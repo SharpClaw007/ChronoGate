@@ -4,7 +4,15 @@ ChronoGate is free and open-source, so the installers are **unsigned** — the O
 shows a one-time warning you can clear. Nothing is wrong with the app.
 
 ### macOS (`.dmg`)
-1. Download `ChronoGate-<version>.dmg` below, open it, and drag **ChronoGate**
+Pick the build that matches your Mac's chip:
+- **Apple Silicon** (M1/M2/M3/M4, 2020+): `ChronoGate-<version>-arm64.dmg`
+- **Intel** (pre-2020, e.g. a 2016 MacBook Pro): `ChronoGate-<version>-x86_64.dmg`
+
+Not sure? Apple menu ▸ **About This Mac** — "Apple M…" = Apple Silicon,
+"Intel" = Intel. The wrong build fails to open with *"not supported on this
+Mac."*
+
+1. Download the matching `.dmg` below, open it, and drag **ChronoGate**
    into your **Applications** folder.
 2. Launch it. macOS blocks the first open: *"Apple cannot check it for malicious
    software."*
