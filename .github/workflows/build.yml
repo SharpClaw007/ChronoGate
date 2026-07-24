@@ -47,13 +47,18 @@ jobs:
     # Two native builds: Apple Silicon on the arm64 runner, Intel on the last
     # x86_64 runner GitHub offers. A 2016-era Intel Mac can only run the x86_64
     # dmg; an arm64-only build fails there with "not supported on this Mac".
+    #
+    # NB: macos-13 was retired 2025-12-04 -- jobs targeting it queue forever
+    # instead of failing, so never reintroduce that label. macos-15-intel is the
+    # final x86_64 image and disappears in Aug 2027; after that, Intel dmgs must
+    # be built on a self-hosted Intel Mac or dropped.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14     # Apple Silicon -> native arm64
+          - runner: macos-14         # Apple Silicon -> native arm64
             arch: arm64
-          - runner: macos-13     # Intel -> native x86_64
+          - runner: macos-15-intel   # Intel -> native x86_64
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
