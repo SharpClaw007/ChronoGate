@@ -305,8 +305,35 @@ def test_real_sdt_sample_if_present():
     print(f"OK (real): {Path(sample).name} -> {cube.summary()}")
 
 
+def test_non_image_ptu_message_is_plain_english() -> None:
+    """A point/FCS .ptu must be refused in words a microscopist can act on.
+
+    Real SymPhoTime workspaces are full of point measurements (FCS/FCCS), and
+    ChronoGate rightly cannot map them to pixels. The refusal is therefore a
+    normal, frequent path -- not an edge case -- so it must name the measurement
+    type and say what is needed instead, without leaking a Python repr like
+    ``<PtuRecordType.GenericT3: 66311>`` at a scientist.
+    """
+    msg = loader.not_an_image_message("LSM_1.ptu", record_type_name="GenericT3", submode=1)
+
+    assert "<" not in msg and ">" not in msg, f"leaks a Python repr: {msg}"
+    assert "66311" not in msg, f"leaks a raw enum value: {msg}"
+    assert "point" in msg.lower(), f"does not name the measurement type: {msg}"
+    assert "LSM_1.ptu" in msg, f"does not name the file: {msg}"
+    # It must say what to do, not merely what went wrong.
+    assert "image" in msg.lower(), f"does not say what ChronoGate needs: {msg}"
+
+    # Unknown submodes must degrade gracefully rather than assert a wrong label.
+    other = loader.not_an_image_message("x.ptu", record_type_name="GenericT3", submode=7)
+    assert "7" in other, f"unknown submode should still be reported: {other}"
+    assert "<" not in other
+
+    print(f"OK: non-image message is plain English -> {msg}")
+
+
 if __name__ == "__main__":
     _synthetic_tests = [
+        test_non_image_ptu_message_is_plain_english,
         test_sdt_resolution_and_photon_total_from_times,
         test_sdt_time_axis_identified_when_not_last,
         test_sdt_channel_pick_and_n_channels,

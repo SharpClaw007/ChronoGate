@@ -141,6 +141,38 @@ class UnsupportedFileError(RuntimeError):
     """Raised when a .ptu file is not an image we know how to turn into a cube."""
 
 
+# PicoQuant measurement submodes. A SymPhoTime workspace typically mixes these
+# freely -- an FCS calibration session is all point measurements -- so opening
+# the wrong one is a routine mistake rather than a rare failure.
+_SUBMODE_LABELS = {
+    1: "point (single-spot)",
+    2: "line-scan",
+    3: "image",
+}
+
+
+def not_an_image_message(name: str, record_type_name: str, submode: int | None) -> str:
+    """Explain, in a microscopist's terms, why a .ptu cannot be opened.
+
+    Kept separate from the loader so the wording is testable without needing a
+    real point-mode file (which cannot be committed -- these run to hundreds of
+    megabytes). Deliberately avoids ``repr`` of ptufile's enums: a reader should
+    never be shown ``<PtuRecordType.GenericT3: 66311>``.
+    """
+    label = _SUBMODE_LABELS.get(submode)
+    if label is None:
+        kind = f"a measurement in submode {submode}"
+    else:
+        kind = f"a {label} measurement"
+    return (
+        f"{name} is {kind}, not an image, so there are no pixels to map. "
+        f"ChronoGate opens imaging FLIM data — a .ptu recorded as an image scan. "
+        f"Point measurements like this one (FCS/FCCS, time traces) need "
+        f"correlation software such as SymPhoTime instead. "
+        f"(Record type {record_type_name}.)"
+    )
+
+
 def _to_canonical(arr: np.ndarray, dims: tuple[str, ...]) -> np.ndarray:
     """Reorder/expand a decoded array to canonical ``(T, Y, X, C, H)``.
 
@@ -212,9 +244,11 @@ def load_ptu(
     try:
         if not ptu.is_image:
             raise UnsupportedFileError(
-                f"{path.name!r} is a {ptu.record_type!r} measurement but not an "
-                f"image (measurement submode {ptu.measurement_submode}); "
-                f"ChronoGate only handles imaging FLIM data."
+                not_an_image_message(
+                    path.name,
+                    getattr(ptu.record_type, "name", str(ptu.record_type)),
+                    getattr(ptu, "measurement_submode", None),
+                )
             )
 
         # --- metadata, all read from the file header (nothing hardcoded) ---
