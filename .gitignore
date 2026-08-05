@@ -35,3 +35,8 @@ chronogate_exports/
 
 # App-bundle launch log
 .chronogate-launch.log
+
+# Staged USB/offline deployment folder: built installers (~68 MB each) plus the
+# generated SOP PDF. All of it is reproducible -- the installers come from a
+# GitHub release, the PDF from docs/sop/build.py -- so none of it belongs in git.
+ChronoGate-USB/
