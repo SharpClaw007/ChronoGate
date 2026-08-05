@@ -10,6 +10,11 @@ on the target machine. Windows 10 or 11, 64-bit.
 | `ChronoGate-Setup-<version>.exe` | The installer. Self-contained. |
 | `ChronoGate-SOP.pdf` | Operating guide — how to use the app. |
 | `README.txt` | This sheet. |
+| `SHA256SUMS.txt` | Checksums, to confirm the copy is intact. |
+
+To verify the transfer before installing, open PowerShell in this folder and run
+`Get-FileHash ChronoGate-Setup-<version>.exe -Algorithm SHA256`. The result
+should match the line in `SHA256SUMS.txt`.
 
 The installer bundles its own Python runtime, Qt, numpy and scipy. **The lab PC
 does not need Python installed**, and nothing is downloaded during setup.
