@@ -213,6 +213,15 @@ one-page report (PNG+PDF with the headline number, decay, image and provenance),
 | `.sdt` won't open (`sdtfile` missing) | environment predates the dependency | relaunch (auto-rebuild) or `pip install -e .` |
 | RLD τ looks wrong | unequal gates, or no background subtraction | make gates equal width; set the noise floor (§7) |
 | app "unidentified developer" warning | installers are unsigned | right-click ▸ Open (macOS) / More info ▸ Run (Windows) |
+| app closes unexpectedly | an unhandled error | a diagnostic log is saved automatically — send it on (see below) |
+
+**If ChronoGate closes unexpectedly**, it writes a dated log naming the fault.
+Send the newest file from:
+
+- **Windows:** `%LOCALAPPDATA%\ChronoGate\logs`
+- **macOS:** `~/Library/Logs/ChronoGate`
+
+(The error dialog shows the exact path. Only the last 20 logs are kept.)
 
 # 14. Revision history
 

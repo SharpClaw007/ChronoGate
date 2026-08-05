@@ -96,6 +96,12 @@ def _resolve_path(arg: str | None) -> Path | None:
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_streams()   # τ/→/φ in a print() must not crash a cp1252 console
+    # Before anything that can fail: a windowed frozen build has no console, so
+    # without this a startup crash leaves no trace at all (see chronogate.crashlog).
+    from . import crashlog
+    from . import __version__
+
+    crashlog.install(__version__)
     _reexec_native_arm64()  # go native on Apple Silicon before loading the GUI
 
     parser = argparse.ArgumentParser(

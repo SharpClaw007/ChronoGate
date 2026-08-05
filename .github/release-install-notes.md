@@ -30,6 +30,16 @@ Mac."*
 Run the installer. At *"Windows protected your PC"* click **More info ▸ Run
 anyway** (the app is unsigned; SmartScreen warns until it builds reputation).
 
+**Deploying to managed/lab machines (IT):** the installer is Inno Setup, so it
+takes the standard unattended flags:
+```
+ChronoGate-Setup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS
+```
+Use `/CURRENTUSER` instead of `/ALLUSERS` to install per-user without admin
+rights. Because the build is unsigned, allowlist it by hash if the fleet runs
+AppLocker or WDAC — those policies block unsigned binaries outright, with no
+"Run anyway" escape. Crash logs land in `%LOCALAPPDATA%\ChronoGate\logs`.
+
 ### Run from source (no warnings)
 With Python 3.12+:
 ```

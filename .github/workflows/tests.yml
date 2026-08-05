@@ -39,5 +39,11 @@ jobs:
       - name: Analysis tests (synthetic data, no files needed)
         run: python test_gating.py
 
+      - name: IRF reconvolution tests (the lifetime-fit engine)
+        run: python test_reconv.py
+
+      - name: Loader tests (.sdt mapping; real-file test skips when absent)
+        run: python test_loader_sdt.py
+
       - name: UI smoke tests (offscreen; skip if no sample data)
         run: python test_ui_smoke.py
